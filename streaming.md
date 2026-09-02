@@ -71,6 +71,20 @@ durable stream is ideal when multiple consumer groups need independent access to
 an ordered history. Real systems often use both: a stream distributes facts,
 while queues dispatch retryable units of work.
 
+## Redis messaging
+
+[Redis](./caching/redis.md) provides two distinct messaging models. Pub/Sub is a
+live, at-most-once broadcast: a disconnected subscriber misses messages sent
+while it is away. Redis Streams retains an append-only sequence and supports
+consumer groups, acknowledgements, pending entries, and replay, making
+at-least-once processing possible.
+
+Use Pub/Sub for ephemeral notifications such as presence or cache invalidation
+when loss is acceptable or repaired elsewhere. Consider Redis Streams for a
+compact operational workflow, and compare it with a dedicated streaming
+platform when the design needs long retention, many independent consumer
+groups, large-scale replay, or a broader stream-processing ecosystem.
+
 ## Design checklist
 
 - What is the event schema, identity, and retention period?
@@ -79,4 +93,3 @@ while queues dispatch retryable units of work.
 - Can consumers process duplicates safely?
 - How are late, malformed, and poison events handled?
 - How will lag, replay, and schema evolution be operated?
-

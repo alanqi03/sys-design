@@ -10,6 +10,11 @@ patterns and correctness requirements, not with a product name.
 This section starts with general database design principles, then applies them
 to specific systems such as [PostgreSQL](./database/postgresql.md).
 
+[Redis](./caching/redis.md) can persist data and act as an in-memory database,
+but this book places it under Caching because its most common system-design role
+is accelerating or coordinating access around another source of truth. Its
+chapter also covers the cases where Redis owns durable state.
+
 ## Model the workload
 
 Write down the principal entities, expected data volume, read/write ratio, and

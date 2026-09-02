@@ -23,6 +23,9 @@ project:
         - file: database/cassandra.md
         - file: database/elasticsearch.md
     - file: caching.md
+      children:
+        - file: caching/fundamentals.md
+        - file: caching/redis.md
     - file: streaming.md
 
 site:
