@@ -18,9 +18,10 @@ rate limits, leaderboards, queues, messaging, and coordination.
 - **Role and source of truth.** Decide whether Redis holds disposable cached
   copies, rebuildable derived state, or authoritative data. The last choice
   requires deliberate persistence, replication, backup, and recovery plans.
-- **Keys and data structures.** Design key names, value sizes, and access
-  patterns together; select native structures whose commands perform the work
-  atomically instead of repeatedly moving data to the application.
+- **Keys and data structures.** Every Redis key is a string (technically a
+  binary-safe byte string). Use colon-separated names such as
+  `user:42:profile`, then choose a value type whose commands match the access
+  pattern.
 - **TTL and eviction.** Decide which keys expire, how TTLs are randomized, the
   `maxmemory` headroom, and whether LRU, LFU, TTL-based, random, or no eviction
   matches the workload.
@@ -121,157 +122,204 @@ benchmark.
 
 ## Overview
 
-### Mental model
+### Keys and values
 
-Redis is a network server holding a keyspace of typed values primarily in
-memory. A client sends commands over a persistent connection using Redis's
-request/response protocol. Instead of exposing a general query language, Redis
-offers operations shaped around each data type: increment a counter, add a set
-member, update a sorted-set score, append to a stream, or set a key only if it
-does not exist.
+Every Redis key is a string. Keys are usually readable text, although Redis
+treats them as binary-safe byte strings. Redis has no built-in namespaces, so
+applications conventionally separate key parts with colons:
 
-This model is fast because the server usually performs a small, direct operation
-without reading a page from disk or planning a query. It also means the
-application must design the keys and access paths in advance. Redis cannot
-efficiently answer an arbitrary question that was not represented in its key
-or index model.
+```text
+user:42:profile
+user:42:settings
+session:7f3a9c
+cache:product:123
+rate_limit:user:42:2026-09-01T10:15
+leaderboard:2026:weekly
+```
 
-### What happens on a read
+Read a key from general to specific: `cache:product:123` means the cached
+representation of product `123`. Keep the scheme stable and documented; key
+names consume memory too. In Redis Cluster, braces can deliberately place
+related keys in one hash slot: `{user:42}:profile` and `{user:42}:settings`.
 
-1. A client reuses a TCP or TLS connection and sends a command such as `GET`,
-   `HGET`, or `ZRANGE`.
-2. Redis parses the command, checks authentication and permissions, and locates
-   the value in its in-memory keyspace.
-3. The command runs against the value's native data structure. Its complexity
-   depends on the command and collection size, so an operation can be fast even
-   when the data type as a whole is large—or block the shard if it requests
-   unbounded work.
-4. Redis encodes and returns the result. For small commands, the network round
-   trip and serialization can cost more than the lookup itself.
+The key is always a string, but its **value** has a Redis type. Match the type to
+the operation instead of serializing everything into one blob:
 
-Pipelining sends multiple independent commands before waiting for replies. This
-amortizes network and socket overhead, but clients should use bounded batches so
-Redis does not accumulate an excessive reply buffer.
+```text
+SET  user:42:name "Ada"                         # string
+HSET user:42:profile plan pro region us-west   # hash
+SADD user:42:roles editor reviewer             # set
+ZADD leaderboard:weekly 9800 user:42           # sorted set
+XADD orders:events * order_id 123 status paid  # stream
+```
 
-### What happens on a write
+### Reads and writes
 
-1. Redis locates or creates the key and applies the command to the in-memory
-   data structure.
-2. A single command is atomic relative to other commands on that shard. A
-   transaction or script can group related work, but long-running work delays
-   every client sharing the shard.
-3. If AOF is enabled, Redis appends a representation of the write and flushes it
-   according to the configured fsync policy. If RDB is enabled, background
-   snapshots periodically capture the dataset.
-4. The primary propagates the change to replicas asynchronously in the common
-   configuration, then returns according to the command and durability settings.
+A read locates the key in memory and runs a type-specific command. A write
+changes the in-memory value, optionally records it for persistence, and sends it
+to replicas. A single command is atomic on its shard.
 
-Redis normally processes command work sequentially on a shard, which makes
-individual operations easy to reason about but turns slow commands into a
-shared latency problem. Modern Redis can use additional threads for parts of
-I/O and background work; that does not make an unbounded command harmless.
+```text
+SET cache:product:123 '{"name":"Keyboard","price":99}' EX 300
+GET cache:product:123
+INCR product:123:view_count
+HGET user:42:profile region
+```
+
+For small commands, network round-trip time can exceed Redis processing time.
+Pipelining batches independent commands into fewer round trips; `MULTI`/`EXEC`
+is different—it prevents other clients' commands from running in the middle of
+the transaction. Keep commands, pipelines, transactions, and scripts bounded:
+one expensive operation can delay every client using that shard.
 
 ### Expiration and eviction
 
-A TTL makes a key unavailable after a deadline. Redis removes expired keys both
-when they are accessed and through background expiration work. Applications
-should treat a TTL as a freshness or retention rule, not as a promise that a
-callback will run at an exact millisecond.
+A TTL makes a key unavailable after a deadline:
 
-`maxmemory` bounds the memory used for the dataset. When Redis crosses that
-limit, its policy may reject memory-adding writes or evict keys using an
-all-keys or expiring-key variant of LRU, LFU, random, or nearest-expiration
-selection. Leave headroom for clients, replication, persistence, fragmentation,
-and operating-system memory rather than sizing `maxmemory` to all available RAM.
+```text
+SET session:7f3a9c '{"user_id":42}' EX 1800
+TTL session:7f3a9c
+EXPIRE session:7f3a9c 3600
+```
+
+Redis expires keys on access and with background work, so use TTLs for freshness
+or retention—not as an exact scheduler. When `maxmemory` is reached, the chosen
+policy either rejects memory-adding writes or evicts keys using LRU, LFU,
+random, or TTL-based selection. Leave RAM for replication, persistence, client
+buffers, and fragmentation instead of assigning all machine memory to data.
 
 ### Persistence and recovery
 
-Redis provides four broad persistence choices:
+Redis provides four practical choices:
 
 - **None:** fastest and appropriate when every value can be reconstructed.
-- **RDB snapshots:** compact point-in-time files with fast restart, but changes
-  after the latest completed snapshot can be lost.
+- **RDB snapshots:** periodic point-in-time files; recent changes can be lost.
 - **AOF:** a log of writes that Redis replays at startup. Fsync on every write is
   safer and slower; periodic fsync accepts a bounded window of loss.
-- **RDB plus AOF:** combines snapshots and a write log at additional resource
-  cost.
+- **RDB plus AOF:** combines both at additional resource cost.
+
+For example, this enables AOF and asks the operating system to flush it about
+once per second:
+
+```text
+appendonly yes
+appendfsync everysec
+```
 
 Persistence protects against process restart; it is not the same as high
-availability or a tested backup. Replication protects service continuity,
-while off-host backups and restore drills protect against corruption, operator
-error, and correlated failure.
+availability or backup. Use replicas for service continuity and off-host,
+restore-tested backups for operator error or correlated failure.
 
 ### Replication, Sentinel, and Cluster
 
-A primary streams changes to replicas. Replicas can serve stale-tolerant reads
-and can be promoted after a failure. Redis Sentinel monitors a non-clustered
-deployment, coordinates failover, and helps clients discover the current
-primary. Because replication is normally asynchronous, a promoted replica may
-not contain the latest acknowledged writes.
+A primary asynchronously sends writes to replicas. Replicas can serve stale
+reads or be promoted after failure; Sentinel coordinates this failover for a
+non-clustered deployment. A promoted replica can be missing the latest
+acknowledged writes.
 
-Redis Cluster scales the keyspace horizontally. It maps each key to one of
-16,384 hash slots and assigns groups of slots to primary nodes. Clients learn
-the mapping and follow redirections to the node that owns a key. Replicas add
-availability for each primary.
+Redis Cluster partitions keys across 16,384 hash slots. Ordinarily these keys
+may land on different shards:
 
-Multi-key commands, transactions, and scripts in Cluster generally require all
-involved keys to share one slot. A hash tag—for example, the `{account:42}` part
-of several keys—can co-locate related values, but concentrating too much traffic
-under one tag creates a hot shard.
+```text
+user:42:profile
+user:42:settings
+```
+
+Braces create a **hash tag**, forcing the enclosed portion to determine the
+slot. This lets a transaction address both keys:
+
+```text
+{user:42}:profile
+{user:42}:settings
+```
+
+Use hash tags only for operations that truly need co-location; overusing one tag
+concentrates traffic on a single shard.
 
 ### Caching patterns
 
-Redis commonly implements cache-aside: read Redis, fetch the source on a miss,
-then populate Redis with a TTL. The application still owns miss handling and
-invalidation. Use randomized TTLs, request coalescing, and bounded regeneration
-to stop many simultaneous misses from overwhelming the source.
+Cache-aside keeps the database authoritative:
 
-Negative caching can briefly remember that an item does not exist. Versioned
-keys make invalidation safer by moving readers to a new namespace while old
-entries expire. For correctness-sensitive reads, invalidate after the source
-transaction commits or use a change event; do not delete the cache before a
-database write that might fail.
+```python
+key = f"cache:product:{product_id}"
+product = redis.get(key)
+
+if product is None:
+    product = database.load_product(product_id)
+    redis.set(key, serialize(product), ex=300)
+
+return product
+```
+
+Add random TTL jitter and coalesce concurrent misses so one expired hot key does
+not stampede the database. After changing the product, commit the database
+transaction first and then delete `cache:product:123` or publish an invalidation
+event. A short-lived negative entry can also prevent repeated lookups for a
+missing product.
 
 ### Counters, rate limits, and leaderboards
 
-Atomic increments make Redis useful for approximate metrics, quotas, and rate
-limits. Expiring keys support fixed windows; sorted sets or scripts can implement
-sliding windows. A rate limiter must define its behavior when Redis is
-unavailable: fail open protects availability, while fail closed protects the
-limited resource.
+Atomic increments provide counters without a read-modify-write race:
 
-Sorted sets store unique members ordered by score. They efficiently support
-leaderboards, priority queues, and range-by-score queries. Plan for ties, score
-updates, seasonal resets, and whether one globally hot leaderboard needs
-partitioning or precomputed views.
+```text
+INCR article:99:view_count
+INCRBY inventory:sku-123:reserved 4
+```
+
+An expiring counter can implement a basic fixed-window rate limit; a script can
+atomically combine increment and expiration. Decide whether a Redis outage
+should fail open or reject requests.
+
+Sorted sets make a leaderboard direct:
+
+```text
+ZADD leaderboard:2026:weekly 9800 user:42
+ZADD leaderboard:2026:weekly 10400 user:7
+ZREVRANGE leaderboard:2026:weekly 0 9 WITHSCORES
+ZREVRANK leaderboard:2026:weekly user:42
+```
+
+Plan for ties, resets, and a globally hot leaderboard that may need cached or
+partitioned views.
 
 ### Pub/Sub versus Streams
 
-Redis Pub/Sub broadcasts a message to clients subscribed at that moment. It is
-at-most-once and does not retain missed messages, making it appropriate for live
-notifications, presence, and cache invalidation where occasional loss is
-acceptable or repaired elsewhere.
+Pub/Sub sends only to clients connected at that moment:
 
-Redis Streams stores an append-only sequence. Consumer groups distribute work,
-track pending messages, and support acknowledgements and replay. This enables
-at-least-once processing, so consumers must be idempotent and operators must
-manage retention, pending entries, retries, and poison messages. For long
-retention, very high fan-out, or a large streaming ecosystem, compare Redis
-Streams with a dedicated log platform rather than assuming they are equivalent.
+```text
+SUBSCRIBE notifications:user:42
+PUBLISH notifications:user:42 '{"type":"order_shipped"}'
+```
+
+It is at-most-once: disconnecting loses messages. Streams retain entries and
+support consumer groups, acknowledgements, and replay:
+
+```text
+XGROUP CREATE orders:events workers 0 MKSTREAM
+XADD orders:events * order_id 123 status paid
+XREADGROUP GROUP workers worker-1 COUNT 10 STREAMS orders:events >
+XACK orders:events workers 1712345678901-0
+```
+
+Streams enable at-least-once processing, so consumers must handle duplicates and
+operators must manage retention, retries, and pending entries. Compare a
+dedicated log platform when retention, replay, or fan-out becomes large.
 
 ### Distributed locks
 
-A basic Redis lock uses an atomic conditional set with a unique owner token and
-an expiration. Release must delete the key only when the stored token still
-matches the owner. The expiration prevents a crashed client from holding the
-lock forever, but it also means a paused client can continue working after its
-lease has expired and another client has acquired it.
+A lock is a unique token stored only if the key does not already exist:
 
-Use Redis locks when the protected operation tolerates their timing and failure
-model. For correctness-critical or irreversible work, add an authoritative
-state check or fencing mechanism and analyze partitions, failover, clock and
-pause behavior explicitly. A lock should reduce concurrency; it should not be
-the only proof that a business invariant is safe.
+```text
+SET lock:order:123 550e8400-e29b-41d4-a716-446655440000 NX PX 10000
+```
+
+`NX` acquires only when absent; `PX 10000` makes the lease expire after ten
+seconds. Release must conditionally delete the key only if its value still
+matches this owner's token—never use an unconditional `DEL`.
+
+A paused client can resume after its lease expired and another client acquired
+the lock. For irreversible work, pair the lock with an authoritative state
+check or fencing mechanism; the lock alone is not proof of correctness.
 
 ### Features
 
@@ -305,6 +353,7 @@ cause irreversible harm.
 
 ### Sources and further reading
 
+- [Redis keys and values](https://redis.io/docs/latest/develop/using-commands/keyspace/)
 - [Redis data types](https://redis.io/docs/latest/develop/data-types/)
 - [Redis key eviction](https://redis.io/docs/latest/develop/reference/eviction/)
 - [Redis persistence](https://redis.io/docs/latest/operate/oss_and_stack/management/persistence/)
