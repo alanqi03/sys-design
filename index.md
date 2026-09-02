@@ -22,7 +22,8 @@ Each chapter follows the same learning loop:
 4. Evaluate the trade-offs with concrete questions.
 
 The material begins with networking and servers, then introduces the stateful
-building blocks used in most large systems: databases, caches, and streams.
+building blocks used in most large systems: databases, caches, queues, and
+streams.
 
 ## A framework for design problems
 
@@ -43,4 +44,3 @@ components and patterns needed to explore it.
 A system design is not complete when the happy path works. It is complete when
 its assumptions, bottlenecks, and failure behavior are explicit.
 ```
-

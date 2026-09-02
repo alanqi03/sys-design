@@ -9,6 +9,7 @@ project:
     - networking
     - databases
     - caching
+    - queues
     - streaming
   toc:
     - file: index.md
@@ -26,7 +27,17 @@ project:
       children:
         - file: caching/fundamentals.md
         - file: caching/redis.md
+    - file: queues.md
+      children:
+        - file: queues/queue-fundamentals.md
+        - file: queues/sqs.md
+        - file: queues/rabbitmq.md
     - file: streaming.md
+      children:
+        - file: streaming/streaming-fundamentals.md
+        - file: streaming/stream-processing-architectures.md
+        - file: streaming/kafka.md
+        - file: streaming/flink.md
 
 site:
   template: book-theme
