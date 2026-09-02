@@ -1,0 +1,32 @@
+version: 1
+
+project:
+  title: System Design
+  description: A practical textbook for designing scalable, reliable distributed systems.
+  keywords:
+    - system design
+    - distributed systems
+    - networking
+    - databases
+    - caching
+    - streaming
+  toc:
+    - file: index.md
+    - file: basics.md
+      children:
+        - file: basics/networking.md
+        - file: basics/servers.md
+    - file: database.md
+      children:
+        - file: database/postgresql.md
+        - file: database/dynamodb.md
+        - file: database/cassandra.md
+        - file: database/elasticsearch.md
+    - file: caching.md
+    - file: streaming.md
+
+site:
+  template: book-theme
+  title: System Design
+  options:
+    style: ./styles.css
