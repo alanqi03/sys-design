@@ -9,6 +9,8 @@ project:
     - networking
     - connection protocols
     - real-time communication
+    - api gateway
+    - load balancing
     - databases
     - caching
     - queues
@@ -29,6 +31,10 @@ project:
         - file: connection-protocols/server-sent-events.md
         - file: connection-protocols/websockets.md
         - file: connection-protocols/webrtc.md
+    - file: api-gateway-load-balancing.md
+      children:
+        - file: traffic-management/api-gateway.md
+        - file: traffic-management/load-balancing.md
     - file: database.md
       children:
         - file: database/postgresql.md

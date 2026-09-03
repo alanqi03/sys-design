@@ -6,7 +6,7 @@ title: Servers
 
 A server accepts work, applies business logic, and returns or emits a result.
 At small scale this may be one process on one machine. At larger scale it is a
-fleet of instances behind a load balancer.
+fleet of instances behind a [load balancer](../traffic-management/load-balancing.md).
 
 ## The request lifecycle
 
@@ -87,4 +87,3 @@ in-flight work, and then exit during a graceful shutdown.
 At minimum, observe request rate, error rate, and latency, plus saturation of
 critical resources. Structured logs explain individual events; metrics reveal
 trends; distributed traces show how time moves through a request path.
-
