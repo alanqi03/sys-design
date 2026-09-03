@@ -108,7 +108,8 @@ benchmark.
 
 - **Optimistic locking** is a technique where we first read the current state of
   the business and then attempt to update it. If the state has changed since we
-  read it, our update fails and we can retry.
+  read it, our update fails and we can retry. See
+  [Concurrent Writes](#concurrent-writes) for an example.
 - **Change Data Capture (CDC)** can read committed changes from PostgreSQL's WAL
   through logical decoding or logical replication. A connector can publish
   those changes as events to a queue or stream for downstream processing.
@@ -132,6 +133,129 @@ benchmark.
 - **Durability:** after PostgreSQL confirms a commit, the change survives a
   process or machine crash under the configured durability settings. WAL is the
   key mechanism behind this guarantee.
+
+(concurrent-writes)=
+### Concurrent Writes
+
+Two requests can read the same value and then make incompatible decisions. For
+example, two buyers may both see one item in stock. Put correctness-sensitive
+read-modify-write logic inside the database using an atomic statement,
+pessimistic locking, optimistic concurrency, or a stricter isolation level.
+
+#### Prefer one atomic statement when possible
+
+Let PostgreSQL test the precondition and change the row as one operation:
+
+```sql
+UPDATE products
+SET stock = stock - 1
+WHERE id = 42 AND stock > 0
+RETURNING stock;
+```
+
+One returned row means the reservation succeeded; zero rows means it was out of
+stock. This avoids a separate `SELECT` whose result could become stale before
+the `UPDATE`.
+
+#### Pessimistic concurrency: lock before deciding
+
+Pessimistic concurrency assumes a conflict is likely. `SELECT ... FOR UPDATE`
+locks the selected row until the transaction ends, so another writer or locker
+must wait:
+
+```sql
+BEGIN;
+
+SELECT stock
+FROM products
+WHERE id = 42
+FOR UPDATE;
+
+-- Validate stock and calculate the change in application code.
+UPDATE products SET stock = stock - 1 WHERE id = 42;
+
+COMMIT;
+```
+
+Choose this when contention is common, the decision depends on the latest row,
+or retrying expensive work would be undesirable. Keep the transaction short,
+never wait for a user or network service while holding a lock, acquire multiple
+locks in a consistent order, and set a lock timeout. These habits reduce long
+waits and deadlocks.
+
+#### Optimistic concurrency: reject a stale write
+
+Optimistic concurrency assumes conflicts are uncommon. Read a version with the
+row, then make the version part of the update condition:
+
+```sql
+-- The application previously read stock = 8 and version = 7.
+UPDATE products
+SET stock = 7,
+    version = version + 1
+WHERE id = 42 AND version = 7
+RETURNING version;
+```
+
+If another transaction changed the row first, this returns zero rows. Reload the
+current state and retry the **entire business operation** with bounded attempts
+and jitter, or return a conflict to the caller. This approach avoids holding a
+lock while a user edits a form, but repeated retries perform poorly on a hot
+row. A timestamp can be used as a token, but an integer version is simpler and
+does not depend on clock precision.
+
+#### Build one atomic transaction
+
+When a business action changes several rows, wrap all database effects in one
+transaction. This transfer either debits, credits, and records the ledger entry
+together, or rolls them all back:
+
+```sql
+BEGIN;
+
+-- Lock in a stable order so concurrent transfers do the same.
+SELECT id
+FROM accounts
+WHERE id IN (101, 202)
+ORDER BY id
+FOR UPDATE;
+
+UPDATE accounts
+SET balance_cents = balance_cents - 5000
+WHERE id = 101 AND balance_cents >= 5000
+RETURNING id;
+
+-- If the debit returned no row, the application issues ROLLBACK.
+UPDATE accounts
+SET balance_cents = balance_cents + 5000
+WHERE id = 202
+RETURNING id;
+
+INSERT INTO ledger_entries (transfer_id, from_id, to_id, amount_cents)
+VALUES ('tx_987', 101, 202, 5000);
+
+COMMIT;
+```
+
+The application must verify that both account updates returned the expected
+row, otherwise it rolls back. Enforce invariants with constraints as a final
+safety net, and use a unique request or transfer ID to make retries idempotent.
+For invariants spanning rows that cannot be locked cleanly, use `SERIALIZABLE`
+and retry the complete transaction after a serialization failure. Deadlock
+victims also need a complete retry.
+
+A database transaction cannot atomically include an ordinary email, HTTP call,
+or message-broker publish. Commit the business change and an outbox row in the
+same transaction, then publish the outbox asynchronously.
+
+#### Choosing an approach
+
+| Situation | Starting choice |
+| --- | --- |
+| A change can be expressed as one conditional `UPDATE` | Atomic statement |
+| Conflicts are common or the current row must remain stable | Pessimistic row lock |
+| Conflicts are rare or work includes user think time | Optimistic version check |
+| An invariant spans multiple rows or queries | Atomic transaction, locks, constraints, and possibly `SERIALIZABLE` |
 
 ### How It Works
 
@@ -235,6 +359,8 @@ engines, warehouses, or streams serve specialized paths.
 ### Sources and further reading
 
 - [PostgreSQL documentation: transaction isolation](https://www.postgresql.org/docs/current/transaction-iso.html)
+- [PostgreSQL documentation: explicit locking](https://www.postgresql.org/docs/current/explicit-locking.html)
+- [PostgreSQL documentation: transactions](https://www.postgresql.org/docs/current/tutorial-transactions.html)
 - [PostgreSQL documentation: MVCC](https://www.postgresql.org/docs/current/mvcc-intro.html)
 - [PostgreSQL documentation: write-ahead logging](https://www.postgresql.org/docs/current/wal-intro.html)
 - [PostgreSQL feature matrix](https://www.postgresql.org/about/featurematrix/)
