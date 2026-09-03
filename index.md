@@ -40,6 +40,9 @@ Before drawing boxes, make the problem measurable:
 These questions constrain the design space. The remaining chapters supply the
 components and patterns needed to explore it.
 
+Use the [Quick Reference](./quick-reference.md) when you need a compact map from
+a scaling or reliability goal to the patterns that can address it.
+
 ```{tip}
 A system design is not complete when the happy path works. It is complete when
 its assumptions, bottlenecks, and failure behavior are explicit.

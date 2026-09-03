@@ -13,8 +13,11 @@ project:
     - caching
     - queues
     - streaming
+    - scalability
+    - fault tolerance
   toc:
     - file: index.md
+    - file: quick-reference.md
     - file: basics.md
       children:
         - file: basics/networking.md
