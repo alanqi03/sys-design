@@ -7,6 +7,8 @@ project:
     - system design
     - distributed systems
     - networking
+    - connection protocols
+    - real-time communication
     - databases
     - caching
     - queues
@@ -17,6 +19,13 @@ project:
       children:
         - file: basics/networking.md
         - file: basics/servers.md
+    - file: connection-protocols.md
+      children:
+        - file: connection-protocols/polling.md
+        - file: connection-protocols/long-polling.md
+        - file: connection-protocols/server-sent-events.md
+        - file: connection-protocols/websockets.md
+        - file: connection-protocols/webrtc.md
     - file: database.md
       children:
         - file: database/postgresql.md

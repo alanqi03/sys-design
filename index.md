@@ -21,9 +21,9 @@ Each chapter follows the same learning loop:
 3. Learn the common design patterns.
 4. Evaluate the trade-offs with concrete questions.
 
-The material begins with networking and servers, then introduces the stateful
-building blocks used in most large systems: databases, caches, queues, and
-streams.
+The material begins with networking, servers, and connection protocols, then
+introduces the stateful building blocks used in most large systems: databases,
+caches, queues, and streams.
 
 ## A framework for design problems
 
