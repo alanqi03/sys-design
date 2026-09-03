@@ -110,9 +110,10 @@ benchmark.
   the business and then attempt to update it. If the state has changed since we
   read it, our update fails and we can retry. See
   [Concurrent Writes](#concurrent-writes) for an example.
-- **Change Data Capture (CDC)** can read committed changes from PostgreSQL's WAL
-  through logical decoding or logical replication. A connector can publish
-  those changes as events to a queue or stream for downstream processing.
+- **[Change Data Capture (CDC)](./change-data-capture-outbox.md)** can read
+  committed changes from PostgreSQL's WAL through logical decoding or logical
+  replication. A connector can publish those changes as events to a queue or
+  stream for downstream processing.
 - **PostGIS** is a PostgreSQL extension that adds geographic and geometric data
   types, spatial indexes, and functions for querying location data.
 - **Full-text search** is built into PostgreSQL and can index, rank, and query

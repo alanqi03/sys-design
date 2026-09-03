@@ -7,8 +7,10 @@ title: Databases
 A database makes state durable and queryable. Selecting one begins with access
 patterns and correctness requirements, not with a product name.
 
-This section starts with general database design principles, then applies them
-to specific systems such as [PostgreSQL](./database/postgresql.md).
+This section starts with general database design principles, compares
+[Change Data Capture and transactional outbox patterns](./database/change-data-capture-outbox.md),
+then applies the principles to systems such as
+[PostgreSQL](./database/postgresql.md).
 
 [Redis](./caching/redis.md) can persist data and act as an in-memory database,
 but this book places it under Caching because its most common system-design role
@@ -49,7 +51,9 @@ non-repeatable reads, and write skew.
 Keep transactions short. Holding locks while making remote calls increases
 contention and makes failure recovery ambiguous. When a workflow crosses service
 boundaries, patterns such as an outbox, saga, or compensating action are often
-more practical than a distributed transaction.
+more practical than a distributed transaction. The
+[CDC and Outbox](./database/change-data-capture-outbox.md) chapter explains how
+to publish a committed change without an unsafe dual write.
 
 ## Replication
 

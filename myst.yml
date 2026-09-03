@@ -37,6 +37,7 @@ project:
         - file: traffic-management/load-balancing.md
     - file: database.md
       children:
+        - file: database/change-data-capture-outbox.md
         - file: database/postgresql.md
         - file: database/dynamodb.md
         - file: database/cassandra.md

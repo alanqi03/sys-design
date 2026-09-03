@@ -85,9 +85,10 @@ flowchart LR
 ```
 
 Writing business state and publishing a message as two independent operations
-creates a dual-write failure window. A transactional outbox stores the state
-change and an outgoing event in one database transaction; a relay publishes the
-event afterward. Consumers deduplicate by a stable message ID.
+creates a dual-write failure window. A
+[transactional outbox](./database/change-data-capture-outbox.md) stores the
+state change and an outgoing event in one database transaction; a relay
+publishes the event afterward. Consumers deduplicate by a stable message ID.
 
 ### Contain dependency failures
 
