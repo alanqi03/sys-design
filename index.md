@@ -25,6 +25,10 @@ The material begins with networking, servers, connection protocols, API
 gateways, and load balancing, then introduces the stateful building blocks used
 in most large systems: databases, caches, queues, and streams.
 
+The [Agent System Design](./agent-system-design.md) section applies these
+building blocks to AI applications that retrieve context, make decisions, use
+tools, and coordinate specialized agents.
+
 ## A framework for design problems
 
 Before drawing boxes, make the problem measurable:

@@ -11,6 +11,8 @@ project:
     - real-time communication
     - api gateway
     - load balancing
+    - agent system design
+    - multi-agent systems
     - databases
     - caching
     - queues
@@ -35,6 +37,13 @@ project:
       children:
         - file: traffic-management/api-gateway.md
         - file: traffic-management/load-balancing.md
+    - file: agent-system-design.md
+      children:
+        - file: agents/input-processing-planning.md
+        - file: agents/context-retrieval.md
+        - file: agents/reasoning-decision-making.md
+        - file: agents/tool-execution.md
+        - file: agents/evaluation-feedback-response.md
     - file: database.md
       children:
         - file: database/change-data-capture-outbox.md
