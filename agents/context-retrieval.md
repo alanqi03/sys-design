@@ -1,122 +1,135 @@
 ---
 title: Context Retrieval
-description: Retrieving relevant, authorized, fresh, and attributable context for an agent.
+description: Choosing the right source for documents, business data, relationships, conversations, and agent state.
 ---
 
 # Context Retrieval
 
-Models have finite context and do not automatically know private or current
-facts. Context retrieval selects evidence for the present task from conversation
-state, documents, databases, APIs, memories, and prior tool results.
+A model does not automatically know your private or current data. Context
+retrieval finds the small amount of information needed for the current task and
+gives it to the model with its source.
 
-## Sources of context
+## The quick rule
 
-- **Conversation state:** recent messages, a verified summary, prior approvals,
-  and unresolved questions.
-- **Unstructured knowledge:** policies, manuals, tickets, wikis, and contracts
-  retrieved by keyword or semantic similarity.
-- **Structured data:** accounts, orders, inventory, permissions, and metrics
-  queried through an API or read-only SQL tool.
-- **Agent state:** current plan, completed steps, tool results, and remaining
-  budgets.
-- **Long-term memory:** deliberately saved user preferences or prior outcomes,
-  with consent, provenance, expiry, and deletion behavior.
+- Fetch **current facts** from the system that owns them.
+- Use a **search or vector index** to find relevant text.
+- Use **SQL or NoSQL** to load structured records.
+- Use a **graph database** when multi-hop relationships are the question.
+- Use a **cache** only to reuse data that has another source of truth.
 
-Do not use model context as the authoritative copy of business state. Fetch a
-balance, order status, or permission from its source of truth when correctness
-depends on its current value.
+A vector database is usually an index, not the authoritative copy of a policy,
+order, or account balance.
 
-## Retrieval pipeline
+## Which source should you use?
+
+| Context | Good starting point | Example |
+| --- | --- | --- |
+| Policies, manuals, and tickets | Documents in a CMS or object store, indexed by keyword and vectors | Find the policy section for damaged items |
+| Current business records | Owning API backed by SQL | Read an order's latest status and delivery date |
+| Records fetched by one known key at high scale | NoSQL key-value or document database | Load a conversation by `conversation_id` |
+| Connected, multi-hop relationships | Graph database, or SQL for fixed and modest joins | Find services affected by a dependency three hops away |
+| Recent conversation | Model context plus durable SQL/NoSQL storage | Keep recent turns and a short summary of older turns |
+| Agent task state | SQL for transactional workflows; NoSQL for simple keyed state | Store completed steps, approvals, and budget |
+| Live external information | Authorized API or retrieval tool | Check current shipment status |
+
+### SQL, NoSQL, vector, or graph?
+
+- **SQL:** use it when transactions, constraints, joins, or flexible filters
+  matter. Orders, payments, inventory, and permissions commonly fit here. Give
+  the agent a narrow API such as `get_order(user_id, order_id)`, not unrestricted
+  production SQL.
+- **NoSQL:** use it for predictable key lookups and easy horizontal scaling.
+  Sessions and conversation state might use a key such as
+  `conversation:tenant_7:conv_456`. NoSQL does not replace a search index.
+- **Vector and keyword search:** use vectors when meaning matters even if words
+  differ. “How do I send broken headphones back?” can match “Returns for damaged
+  electronics.” Use keywords for exact values such as an SKU or error code;
+  hybrid search combines both and is a good starting point for documents.
+- **Graph database:** use it when the path itself matters, such as nested access
+  groups, fraud connections, or service dependencies. For “load an order and
+  its customer,” normal SQL joins are usually simpler.
+
+## Example: customer return agent
+
+For “Can I return my last order?”, the agent needs three kinds of context:
 
 ```{mermaid}
 flowchart LR
-  query[Task and query] --> rewrite[Rewrite or decompose]
-  rewrite --> filters[Identity and metadata filters]
-  filters --> retrieve[Keyword + vector + structured retrieval]
-  retrieve --> rerank[Rerank and deduplicate]
-  rerank --> pack[Pack within context budget]
-  pack --> model[Model with evidence and provenance]
+  request[Return request] --> agent[Agent]
+  agent --> conversation[(SQL or NoSQL<br/>conversation state)]
+  agent --> orderAPI[Order API]
+  orderAPI --> orders[(SQL orders DB)]
+  agent --> search[Hybrid search]
+  search --> index[(Vector + keyword index)]
+  index -. source link .-> docs[(Policy documents)]
+  conversation --> pack[Small context packet]
+  orderAPI --> pack
+  search --> pack
+  pack --> agent
 ```
 
-For documents, split content into chunks that preserve meaningful units such as
-a policy section, index those chunks, and retain source ID, version, timestamps,
-and access-control metadata. Hybrid retrieval combines exact keyword matching
-with semantic search; reranking spends additional compute on a smaller candidate
-set.
+- Conversation state identifies which order “last order” refers to.
+- The order API verifies ownership and returns the current status and date.
+- Hybrid search finds the relevant return-policy passage.
 
-Apply access filters during retrieval, not only after text returns. Retrieving a
-forbidden document and asking the model not to reveal it is not an authorization
-boundary.
+The agent does not need the entire conversation, order database, or policy
+library.
 
-## Retrieve just in time
+## How retrieval should work
 
-Two common designs are:
+For documents, use a short pipeline:
 
-- **Prefetch:** application code always retrieves known context before the model
-  call. This is predictable and works well for a fixed RAG chain.
-- **Retrieval tool:** the agent decides when and how to search. This supports
-  adaptive queries but needs call limits and protection against repeated searches.
+```text
+query → permission and metadata filters → keyword + vector search
+      → rerank and deduplicate → top passages with sources
+```
 
-A hybrid often works best: inject small, always-required policy and identity
-context, then let the agent request scoped domain data as needed.
+Split documents into meaningful chunks such as sections, not arbitrary isolated
+sentences. Each result should carry its document ID, section, version, update
+time, access scope, and text. This lets the response cite evidence and detect an
+old policy.
 
-For “Can I return order 123?”, retrieve the authenticated user's order through
-a structured tool and the current return policy through document search. Do not
-place the entire order history and policy library in every prompt.
+**Prefetch** information every request needs, such as the authenticated user's
+account tier. Give the agent a **retrieval tool** for request-dependent searches,
+such as selecting the right device manual. Many systems use both.
 
-## Context packing
+## Keep context small and trustworthy
 
-Context competes with instructions, conversation, tool schemas, and output for
-the model's token window. Allocate explicit budgets and prefer:
+Pack context in this order:
 
 1. governing policy and task constraints;
-2. current authoritative facts needed for the decision;
-3. the most relevant evidence with source labels; and
-4. a concise conversation or execution summary.
+2. fresh facts needed for the decision;
+3. the best supporting passages with source labels; and
+4. a short conversation or task summary.
 
-Remove duplicates and low-value boilerplate. Preserve enough surrounding text
-to interpret a passage, and never truncate away a condition, exception, unit, or
-date that changes its meaning.
+Then apply these rules:
 
-## Freshness, provenance, and citations
+- Enforce tenant and user permissions before returning results.
+- Treat retrieved text as untrusted data, not as new system instructions.
+- Re-read balances, permissions, inventory, and status before a consequential
+  action.
+- Do not save a model's guess as user memory; saved preferences need consent,
+  provenance, expiry, correction, and deletion.
+- In a multi-agent system, give each specialist only its subtask's context. A
+  billing agent needs the invoice, not the full support transcript.
 
-Every context item should carry a source, version or update time, retrieval time,
-and access scope. The response should cite evidence when users need to verify a
-claim. If sources conflict, surface the conflict or use an explicit authority
-rule rather than letting retrieval rank decide policy.
+## Common failures
 
-Cache stable retrieval results when safe, but include tenant, permissions,
-query, index version, and other response-changing fields in the key. Short TTLs
-do not fix caching data that a user was never authorized to see.
+| Failure | Example | Fix |
+| --- | --- | --- |
+| Missed evidence | Search misses the damaged-item exception | Test recall, improve chunks, and use hybrid search |
+| Stale fact | Cached order still says `processing` | Read consequential state from its owner |
+| Unauthorized result | Another tenant's document appears | Filter by access before retrieval |
+| Too much context | Twenty pages hide one useful paragraph | Rerank, deduplicate, and cap results |
+| Missing source | A rule cannot be verified | Return source, section, version, and timestamp |
 
-## Multi-agent context
-
-Do not copy the full parent conversation into every specialist. Give each agent:
-
-- a typed subtask and success criteria;
-- the minimum relevant evidence and identity scope;
-- its own allowed retrieval sources and tools; and
-- a schema for returning conclusions with citations and uncertainty.
-
-The coordinator should merge structured results, not concatenate several large
-agent transcripts. Shared mutable memory creates races and confusing ownership;
-prefer versioned task state and append-only observations.
-
-## Failure modes and evaluation
-
-- **Missed evidence:** the needed item is not in the candidate set.
-- **Wrong ranking:** relevant evidence exists but is displaced by plausible noise.
-- **Stale context:** an old policy or record drives a current action.
-- **Context poisoning:** untrusted content instructs the agent to ignore policy
-  or expose secrets.
-- **Overstuffing:** excessive context increases latency and distracts the model.
-- **Missing provenance:** a correct-looking answer cannot be verified.
-
-Evaluate retrieval separately from generation with recall at `k`, precision at
-`k`, ranking quality, freshness, authorization leakage tests, citation coverage,
-and downstream task success. A generation score alone cannot reveal whether the
-right evidence ever reached the model.
+Evaluate retrieval separately from the final response. Check whether the needed
+item appears in the top results, whether returned items are relevant and fresh,
+whether citations are present, whether access controls leak data, and whether
+the full task succeeds.
 
 ## Further reading
 
 - [Databricks: AI and agent concepts](https://docs.databricks.com/aws/en/agents/concepts/)
+- [Databricks: AI Search retrieval quality guide](https://docs.databricks.com/aws/en/ai-search/retrieval-quality)
+- [Databricks: Connect agents to structured data](https://docs.databricks.com/aws/en/agents/custom-agents/structured-retrieval-tools)
