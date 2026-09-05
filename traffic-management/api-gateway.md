@@ -55,7 +55,8 @@ a second copy of business logic.
 
 Middleware applies cross-cutting behavior consistently around a request:
 
-- authenticate credentials and authorize an API scope;
+- [authenticate credentials](../api-design/authentication.md) and authorize an
+  API scope;
 - enforce quotas, per-client rate limits, and concurrency limits;
 - attach a request ID and propagate trace context;
 - record access logs, metrics, audit events, and billing usage;

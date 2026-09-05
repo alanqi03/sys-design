@@ -9,6 +9,10 @@ project:
     - networking
     - connection protocols
     - real-time communication
+    - api design
+    - authentication
+    - sessions
+    - jwt
     - api gateway
     - load balancing
     - agent system design
@@ -33,6 +37,9 @@ project:
         - file: connection-protocols/server-sent-events.md
         - file: connection-protocols/websockets.md
         - file: connection-protocols/webrtc.md
+    - file: api-design.md
+      children:
+        - file: api-design/authentication.md
     - file: api-gateway-load-balancing.md
       children:
         - file: traffic-management/api-gateway.md
