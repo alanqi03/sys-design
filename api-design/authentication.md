@@ -65,8 +65,8 @@ sequenceDiagram
   A->>A: Create claims and sign with private key
   A-->>C: Short-lived JWT access token
   Note over C,P: Later request
-  C->>P: Authorization: Bearer &lt;JWT&gt;
-  P->>P: Verify signature with public key<br/>and validate claims
+  C->>P: Authorization header with Bearer JWT
+  P->>P: Verify signature and validate claims
   P-->>C: Protected response
 ```
 
