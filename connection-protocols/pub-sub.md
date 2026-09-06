@@ -76,6 +76,31 @@ Pub/Sub is less attractive when the caller needs an immediate answer. A price
 lookup is usually a synchronous request; `OrderPlaced` side effects can happen
 asynchronously after the order transaction succeeds.
 
+## Redis Pub/Sub
+
+[Redis Pub/Sub](../caching/redis.md) is the lightweight, live-broadcast version
+of this pattern. One client subscribes to a channel, and any client can publish
+a message that Redis immediately pushes to every currently connected
+subscriber.
+
+```text
+# Subscriber
+SUBSCRIBE events:orders
+
+# Publisher
+PUBLISH events:orders '{"type":"OrderPlaced","orderId":"order_123"}'
+```
+
+Channel names are strings and commonly use colon-separated names such as
+`events:orders`; channels are separate from normal Redis keys. This is useful
+for online-presence changes, best-effort cache invalidation, or broadcasting an
+update across a fleet of WebSocket servers.
+
+The key trade-off is **at-most-once delivery**: Redis does not save Pub/Sub
+messages or wait for acknowledgments. If a subscriber is disconnected or fails
+while handling a message, that message is gone. Use Redis Streams or another
+durable broker when consumers must catch up, retry, or replay history.
+
 ## Delivery questions
 
 Pub/Sub does not automatically mean that every message arrives once, in order,
@@ -149,5 +174,7 @@ Pub/Sub, but it requires a reachable subscriber endpoint.
 ## Further reading
 
 - [Google Cloud: Pub/Sub service overview](https://docs.cloud.google.com/pubsub/docs/pubsub-basics)
+- [Redis: Pub/Sub](https://redis.io/docs/latest/develop/pubsub/)
+- [Redis: Streams](https://redis.io/docs/latest/develop/data-types/streams/)
 - [RSS Advisory Board: RSS 2.0 specification](https://www.rssboard.org/rss-specification)
 - [W3C: WebSub](https://www.w3.org/TR/websub/)
