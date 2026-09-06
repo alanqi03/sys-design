@@ -7,8 +7,10 @@ project:
     - system design
     - distributed systems
     - networking
-    - connection protocols
+    - real-time updates
     - real-time communication
+    - publish subscribe
+    - rss feeds
     - api design
     - authentication
     - sessions
@@ -32,6 +34,7 @@ project:
         - file: basics/servers.md
     - file: connection-protocols.md
       children:
+        - file: connection-protocols/pub-sub.md
         - file: connection-protocols/polling.md
         - file: connection-protocols/long-polling.md
         - file: connection-protocols/server-sent-events.md

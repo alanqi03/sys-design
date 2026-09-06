@@ -1,30 +1,34 @@
 ---
-title: Connection Protocols
-description: A practical guide to polling, long polling, Server-Sent Events, WebSockets, and WebRTC.
+title: Real Time Updates
+description: A practical guide to Pub/Sub, RSS feeds, polling, Server-Sent Events, WebSockets, and WebRTC.
 ---
 
-# Connection Protocols
+# Real Time Updates
 
 Applications need different ways to learn about new data. A job-status page can
 check occasionally, a dashboard needs server-driven updates, chat needs both
 sides to speak at any time, and a video call must carry latency-sensitive media.
 
-“Connection protocols” is used broadly here. Polling and long polling are HTTP
-request patterns, SSE is an HTTP event-stream format and browser API, WebSocket
-is a separate framed protocol established through a handshake, and WebRTC is a
-collection of APIs and protocols for peer media and data.
+This section covers both **delivery patterns** and **connection choices**.
+Pub/Sub describes who receives an update, while polling, SSE, WebSocket, and
+WebRTC describe how applications move updates across a network. RSS applies a
+subscription idea to public web content, usually through periodic polling.
 
 ## Quick comparison
 
 | Choice | Communication | Best fit | Main trade-off |
 | --- | --- | --- | --- |
+| [Pub/Sub and RSS](connection-protocols/pub-sub.md) | Publishers emit updates without calling each subscriber directly | Fan-out events and syndicated web content | Delivery, replay, and freshness depend on the broker or feed reader |
 | [Polling](connection-protocols/polling.md) | Client requests, server responds | Rare or delay-tolerant updates | Empty requests waste work; interval adds latency |
 | [Long polling](connection-protocols/long-polling.md) | Server delays each HTTP response | Near-real-time updates with broad HTTP compatibility | Reconnect and HTTP overhead after every response |
 | [SSE](connection-protocols/server-sent-events.md) | Server streams text events to client | Notifications, dashboards, progress, AI text output | Server-to-client only; text format |
 | [WebSocket](connection-protocols/websockets.md) | Full-duplex messages | Chat, collaboration, multiplayer state | Stateful connections and recovery are more complex |
 | [WebRTC](connection-protocols/webrtc.md) | Peer media and/or data | Voice, video, screen sharing, peer data | Signaling, NAT traversal, relays, and group topology |
 
-## A starting decision
+## Choosing a client connection
+
+After deciding which subscribers should receive an update, choose how the last
+hop reaches the client:
 
 ```{mermaid}
 flowchart TD
