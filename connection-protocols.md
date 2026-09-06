@@ -1,6 +1,6 @@
 ---
 title: Real Time Updates
-description: A practical guide to Pub/Sub, RSS feeds, polling, Server-Sent Events, WebSockets, and WebRTC.
+description: A practical guide to Pub/Sub, RSS feeds, polling, webhooks, Server-Sent Events, WebSockets, and WebRTC.
 ---
 
 # Real Time Updates
@@ -10,17 +10,19 @@ check occasionally, a dashboard needs server-driven updates, chat needs both
 sides to speak at any time, and a video call must carry latency-sensitive media.
 
 This section covers both **delivery patterns** and **connection choices**.
-Pub/Sub describes who receives an update, while polling, SSE, WebSocket, and
-WebRTC describe how applications move updates across a network. RSS applies a
-subscription idea to public web content, usually through periodic polling.
+Pub/Sub describes who receives an update, while polling, webhooks, SSE,
+WebSocket, and WebRTC describe how applications move updates across a network.
+RSS applies a subscription idea to public web content, usually through periodic
+polling.
 
 ## Quick comparison
 
 | Choice | Communication | Best fit | Main trade-off |
 | --- | --- | --- | --- |
 | [Pub/Sub and RSS](connection-protocols/pub-sub.md) | Publishers emit updates without calling each subscriber directly | Fan-out events and syndicated web content | Delivery, replay, and freshness depend on the broker or feed reader |
-| [Polling](connection-protocols/polling.md) | Client requests, server responds | Rare or delay-tolerant updates | Empty requests waste work; interval adds latency |
-| [Long polling](connection-protocols/long-polling.md) | Server delays each HTTP response | Near-real-time updates with broad HTTP compatibility | Reconnect and HTTP overhead after every response |
+| [Polling](connection-protocols/polling.md#polling) | Client requests, server responds | Rare or delay-tolerant updates | Empty requests waste work; interval adds latency |
+| [Long polling](connection-protocols/polling.md#long-polling) | Server delays each HTTP response | Near-real-time updates with broad HTTP compatibility | Reconnect and HTTP overhead after every response |
+| [Webhooks](connection-protocols/polling.md#webhooks) | Provider calls a consumer's HTTPS endpoint | Server-to-server event notifications | Receiver must be reachable, secure, and idempotent |
 | [SSE](connection-protocols/server-sent-events.md) | Server streams text events to client | Notifications, dashboards, progress, AI text output | Server-to-client only; text format |
 | [WebSocket](connection-protocols/websockets.md) | Full-duplex messages | Chat, collaboration, multiplayer state | Stateful connections and recovery are more complex |
 | [WebRTC](connection-protocols/webrtc.md) | Peer media and/or data | Voice, video, screen sharing, peer data | Signaling, NAT traversal, relays, and group topology |
@@ -44,8 +46,10 @@ flowchart TD
 
 This is a starting point, not a rule. A WebRTC application commonly uses
 WebSocket for signaling, and an SSE application uses ordinary HTTP requests for
-client commands. Prefer the simplest option that meets the latency, direction,
-browser support, infrastructure, and scale requirements.
+client commands. For server-to-server notifications, use a webhook when the
+provider can reach the consumer; otherwise, the consumer can poll. Prefer the
+simplest option that meets the latency, direction, browser support,
+infrastructure, and scale requirements.
 
 ## Questions to ask
 

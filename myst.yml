@@ -11,6 +11,7 @@ project:
     - real-time communication
     - publish subscribe
     - rss feeds
+    - webhooks
     - api design
     - authentication
     - sessions
@@ -36,7 +37,6 @@ project:
       children:
         - file: connection-protocols/pub-sub.md
         - file: connection-protocols/polling.md
-        - file: connection-protocols/long-polling.md
         - file: connection-protocols/server-sent-events.md
         - file: connection-protocols/websockets.md
         - file: connection-protocols/webrtc.md
