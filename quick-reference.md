@@ -19,6 +19,21 @@ smallest change that addresses it, and load-test the complete path.
 | Reduce latency | Cache nearby, reduce hops, reuse connections, move optional work off-path | Stale data and more complex recovery |
 | Absorb bursts | Durable queues, rate limits, backpressure, autoscaling, load shedding | Added delay and asynchronous behavior |
 
+## Latency targets for interviews
+
+When requirements are unspecified, these are reasonable starting assumptions
+for user-facing, end-to-end latency—not universal guarantees:
+
+- **Ordinary API read:** p95 under **200–300 ms**.
+- **API write:** p95 under **300–500 ms**.
+- **Complex search or feed generation:** p95 under **500 ms**.
+- **Anything over one second:** usually show progress or make the operation
+  asynchronous.
+
+Always state the percentile, measurement boundary, user geography, and whether
+the path is a cache hit or miss. Then divide the target into budgets for the
+client network, gateway, service calls, storage, and safety margin.
+
 ## Before changing the architecture
 
 - Define the target: requests per second, data size, availability, and p95 or
