@@ -35,6 +35,42 @@ a temporary, narrowly scoped permission slip. The application uses its IAM role
 and the AWS SDK to sign a specific operation, bucket, object key, and expiration
 time; it returns the signed URL, not its AWS credentials.
 
+### Why does the URL need a signature?
+
+The client does not have permission to access the private bucket on its own.
+The service's cryptographic signature proves that an authorized IAM identity
+approved this exact request. S3 recalculates the signature and rejects the
+request if someone changes a signed detail such as the object key, expiration,
+HTTP method, or required header.
+
+This lets S3 verify the temporary permission without calling the application on
+every upload or download. A signature provides authentication and tamper
+detection; it does **not** encrypt the URL or hide the object key.
+
+### What is inside a presigned URL?
+
+A Signature Version 4 URL looks roughly like this:
+
+```text
+https://bucket.s3.region.amazonaws.com/object-key
+  ?X-Amz-Algorithm=AWS4-HMAC-SHA256
+  &X-Amz-Credential=<access-key-id>/<date>/<region>/s3/aws4_request
+  &X-Amz-Date=<signed-at-time>
+  &X-Amz-Expires=<lifetime-in-seconds>
+  &X-Amz-SignedHeaders=<headers-covered-by-signature>
+  &X-Amz-Security-Token=<temporary-token-if-used>
+  &X-Amz-Signature=<cryptographic-signature>
+```
+
+The URL exposes the S3 endpoint, bucket and object key, signing algorithm,
+signer's access-key ID and scope, signing time, lifetime, signed-header names,
+and signature. Temporary role credentials also add a security token. It does
+**not** contain the secret access key or the object's bytes, but the complete
+URL is still sensitive because its signature grants access until it expires.
+
+The HTTP method is normally not shown as a query parameter, but it is part of
+what was signed: a URL created for `PUT` cannot simply be reused for `GET`.
+
 ```{mermaid}
 sequenceDiagram
   participant C as Client
@@ -76,8 +112,10 @@ For a single-request upload:
    plus any headers that were included in the signature.
 4. The client sends one HTTP `PUT` directly to S3. The HTTP method and signed
    headers must match exactly.
-5. The client reports completion. The application may use `HeadObject` or an S3
-   event to verify the key, size, and checksum before marking it `READY`.
+5. The client may report completion for quick UI feedback. The application can
+   rely on an S3 Object Created notification, described next, and use
+   `HeadObject` when it needs to verify metadata before marking the object
+   `READY`.
 
 ```http
 PUT https://bucket.s3.region.amazonaws.com/tenant-42/uploads/uuid?...signature...
@@ -90,6 +128,68 @@ x-amz-checksum-sha256: base64-checksum
 If the connection fails, the entire single `PUT` must be retried. That is fine
 for modest files and stable networks, but wasteful for a large upload that fails
 near the end.
+
+## Confirming an upload with S3 Event Notifications
+
+The client returning “done” is not proof: it might crash after a successful
+upload or claim success before S3 accepted the object. S3 can emit an **Object
+Created** event after a `PutObject` or completed multipart upload. The event can
+go to Amazon SQS, SNS, Lambda, or EventBridge.
+
+A durable queue is a useful default because the service can process the event
+even while a worker is restarting:
+
+```{mermaid}
+sequenceDiagram
+  participant C as Client
+  participant A as Application service
+  participant D as Application database
+  participant S as Amazon S3
+  participant Q as Amazon SQS
+  participant W as Upload event worker
+
+  C->>A: Request presigned upload URL
+  A->>D: Insert upload with PENDING status
+  A-->>C: Presigned URL and object key
+  C->>S: Upload object directly
+  S-->>C: Upload accepted
+  S->>Q: Object Created event
+  Q->>W: Deliver event
+  W->>D: Find pending record by bucket and key
+  W->>S: HeadObject if more verification is needed
+  W->>D: Store metadata and set UPLOADED or READY
+  W->>Q: Acknowledge event
+```
+
+### What the service can store
+
+An S3 event includes useful facts such as the event name and time, bucket name,
+object key, object size, ETag, version ID when present, and a sequencer value.
+The worker can match the server-generated key to its `PENDING` database row and
+store fields such as the following. The key in the event is URL-encoded, so
+decode it before comparing it with the canonical key in the database.
+
+```json
+{
+  "status": "UPLOADED",
+  "bucket": "private-uploads",
+  "objectKey": "tenant-42/uploads/uuid",
+  "sizeBytes": 73400320,
+  "etag": "object-etag",
+  "versionId": "object-version",
+  "uploadedAt": "2026-09-10T20:15:00Z"
+}
+```
+
+`UPLOADED` and `READY` may be different states. For untrusted content, first
+record the upload, then verify its checksum, inspect its real content type, and
+run malware or media processing before making it downloadable.
+
+S3 Event Notifications are delivered **at least once** and are not guaranteed
+to be ordered. The worker must tolerate duplicates and stale events—for
+example, by making the update idempotent and comparing the object version or
+sequencer before replacing newer metadata. It should acknowledge the SQS
+message only after the database update commits.
 
 ## Simple download
 
@@ -229,6 +329,9 @@ the entire object first.
 ## Further reading
 
 - [S3 presigned URLs](https://docs.aws.amazon.com/AmazonS3/latest/userguide/using-presigned-url.html)
+- [S3 Signature Version 4 query parameters](https://docs.aws.amazon.com/AmazonS3/latest/developerguide/sigv4-query-string-auth.html)
+- [S3 Event Notification types and destinations](https://docs.aws.amazon.com/AmazonS3/latest/userguide/notification-how-to-event-types-and-destinations.html)
+- [S3 event message structure](https://docs.aws.amazon.com/AmazonS3/latest/userguide/notification-content-structure.html)
 - [S3 multipart upload overview](https://docs.aws.amazon.com/AmazonS3/latest/userguide/mpuoverview.html)
 - [S3 multipart limits](https://docs.aws.amazon.com/AmazonS3/latest/userguide/qfacts.html)
 - [S3 performance guidance for byte-range fetches](https://docs.aws.amazon.com/AmazonS3/latest/userguide/optimizing-performance-guidelines.html)
