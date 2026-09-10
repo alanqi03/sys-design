@@ -25,6 +25,11 @@ project:
     - multi-agent systems
     - databases
     - caching
+    - object storage
+    - amazon s3
+    - large blobs
+    - presigned urls
+    - multipart uploads
     - queues
     - streaming
     - workflows
@@ -74,6 +79,7 @@ project:
       children:
         - file: caching/fundamentals.md
         - file: caching/redis.md
+    - file: s3-large-blobs.md
     - file: queues.md
       children:
         - file: queues/queue-fundamentals.md

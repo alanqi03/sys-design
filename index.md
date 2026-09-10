@@ -23,9 +23,11 @@ Each chapter follows the same learning loop:
 
 The material begins with networking, servers, real-time updates, API design,
 gateways, and load balancing, then introduces the stateful building blocks used
-in most large systems: databases, caches, queues, and streams. [Multi-step
-Processes](./multi-step-processes.md) explains how sagas and durable workflow
-engines coordinate reliable work across those building blocks.
+in most large systems: databases, caches, object storage, queues, and streams.
+[S3: Handling Large Blobs](./s3-large-blobs.md) covers direct and resumable file
+transfers. [Multi-step Processes](./multi-step-processes.md) explains how sagas
+and durable workflow engines coordinate reliable work across these building
+blocks.
 
 The [Agent System Design](./agent-system-design.md) section applies these
 building blocks to AI applications that retrieve context, make decisions, use
