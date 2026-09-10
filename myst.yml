@@ -13,6 +13,9 @@ project:
     - rss feeds
     - webhooks
     - api design
+    - rest
+    - grpc
+    - graphql
     - authentication
     - sessions
     - jwt
@@ -47,6 +50,7 @@ project:
         - file: connection-protocols/webrtc.md
     - file: api-design.md
       children:
+        - file: api-design/api-types.md
         - file: api-design/authentication.md
     - file: api-gateway-load-balancing.md
       children:

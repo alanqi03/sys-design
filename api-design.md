@@ -24,6 +24,9 @@ authorization checks on protected resources.
 
 ## In this section
 
+- [API Types: REST, gRPC, and GraphQL](./api-design/api-types.md) compares three
+  common API styles, including their mental models, strengths, trade-offs, and
+  best use cases.
 - [Authentication: Sessions vs. JWTs](./api-design/authentication.md) compares
   opaque server-side sessions with signed JWT bearer tokens, including request
   flows, trade-offs, and safe defaults.
