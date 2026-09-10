@@ -24,6 +24,11 @@ project:
     - caching
     - queues
     - streaming
+    - workflows
+    - sagas
+    - durable execution
+    - temporal
+    - aws step functions
     - scalability
     - fault tolerance
   toc:
@@ -70,6 +75,7 @@ project:
         - file: queues/queue-fundamentals.md
         - file: queues/sqs.md
         - file: queues/rabbitmq.md
+    - file: multi-step-processes.md
     - file: streaming.md
       children:
         - file: streaming/streaming-fundamentals.md
