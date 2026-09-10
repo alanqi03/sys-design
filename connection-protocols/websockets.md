@@ -44,6 +44,166 @@ Use `wss://` in production so the channel is protected by TLS. Define an
 application envelope with a message type, schema version, request or event ID,
 and payload. WebSocket supplies transport, not the business message format.
 
+## API Design
+
+WebSocket gives the application a two-way pipe, but it does not define the
+messages inside that pipe. For a system-design whiteboard, list the commands the
+client may send and the messages the server may send back.
+
+### Chat API whiteboard
+
+**Commands sent from client to server:**
+
+- `createChat`
+- `sendMessage`
+- `updateChat`
+- `markMessagesRead`
+- `startTyping`
+- `stopTyping`
+
+**Commands received from server:**
+
+- `newMessage`
+- `chatUpdate`
+- `messageRead`
+- `typingUpdate`
+- `commandResult`
+- `error`
+
+More precisely, the client sends **commands** asking for a change, while the
+server usually sends **results** and **events** describing what happened. An
+event such as `newMessage` may arrive without the current client requesting it
+because another participant sent the message.
+
+```{mermaid}
+sequenceDiagram
+  participant A as Client A
+  participant S as Chat server
+  participant B as Client B
+
+  A->>S: sendMessage command with requestId
+  S-->>A: commandResult with same requestId
+  S-->>A: newMessage event
+  S-->>B: newMessage event
+```
+
+### Use a consistent envelope
+
+Every message should identify its type and carry an ID. A `requestId` connects
+a command to its result; an `eventId` lets clients deduplicate pushed events.
+
+```json
+{
+  "type": "sendMessage",
+  "version": 1,
+  "requestId": "req_123",
+  "payload": {}
+}
+```
+
+### `createChat` request and result
+
+```json
+{
+  "type": "createChat",
+  "version": 1,
+  "requestId": "req_123",
+  "payload": {
+    "participants": ["user_42", "user_99"],
+    "name": "System Design Study Group"
+  }
+}
+```
+
+```json
+{
+  "type": "commandResult",
+  "version": 1,
+  "requestId": "req_123",
+  "payload": {
+    "ok": true,
+    "chatId": "chat_abc"
+  }
+}
+```
+
+The matching `requestId` tells the client which pending command completed.
+Other chat participants may separately receive a `chatUpdate` event.
+
+### `sendMessage` request, result, and event
+
+```json
+{
+  "type": "sendMessage",
+  "version": 1,
+  "requestId": "req_456",
+  "payload": {
+    "chatId": "chat_abc",
+    "clientMessageId": "client_msg_789",
+    "text": "Are we still meeting at 6?"
+  }
+}
+```
+
+```json
+{
+  "type": "commandResult",
+  "version": 1,
+  "requestId": "req_456",
+  "payload": {
+    "ok": true,
+    "messageId": "msg_101",
+    "createdAt": "2026-09-10T19:30:00Z"
+  }
+}
+```
+
+After saving the message, the server pushes the resulting event to every
+connected participant:
+
+```json
+{
+  "type": "newMessage",
+  "version": 1,
+  "eventId": "event_555",
+  "payload": {
+    "chatId": "chat_abc",
+    "messageId": "msg_101",
+    "senderId": "user_42",
+    "text": "Are we still meeting at 6?",
+    "createdAt": "2026-09-10T19:30:00Z"
+  }
+}
+```
+
+`clientMessageId` is an idempotency key generated before sending. If the client
+reconnects and retries because it missed the result, the server can return the
+original saved message instead of creating a duplicate.
+
+### Error result
+
+A WebSocket message does not receive an HTTP status code such as `400` or
+`500`, so define application error codes explicitly:
+
+```json
+{
+  "type": "commandResult",
+  "version": 1,
+  "requestId": "req_456",
+  "payload": {
+    "ok": false,
+    "error": {
+      "code": "CHAT_NOT_FOUND",
+      "message": "The chat does not exist or is not accessible."
+    }
+  }
+}
+```
+
+Keep the whiteboard contract small: define commands and events, their payloads,
+how results correlate to commands, idempotency, authorization, ordering, and
+what the client does after reconnecting.
+
 ## Good use cases
 
 - chat, presence, typing indicators, and multiplayer games;
