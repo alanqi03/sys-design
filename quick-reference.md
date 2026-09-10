@@ -34,6 +34,80 @@ Always state the percentile, measurement boundary, user geography, and whether
 the path is a cache hit or miss. Then divide the target into budgets for the
 client network, gateway, service calls, storage, and safety margin.
 
+## Component ballparks for interviews
+
+Use these as order-of-magnitude starting assumptions, not limits or vendor
+promises. State the payload size, operation complexity, durability and
+replication settings, cache state, and whether a number is per node, partition,
+or cluster.
+
+### Cache, such as Redis
+
+- **Latency:** expect roughly **0.5–2 ms** at the application for a simple,
+  same-region cache operation. Redis itself commonly averages below **1 ms**,
+  but that measurement excludes application serialization and network time.
+- **Throughput:** **100k+ simple operations/second per node** is plausible with
+  enough concurrency; pipelining can make benchmark results much higher.
+  Payload size, command complexity, network bandwidth, and hot keys matter.
+- **Capacity:** caches are memory-bound, but **1 TB is not a general maximum**.
+  Estimate values plus keys, metadata, allocator overhead, replicas, and
+  headroom; shard across nodes when the working set is too large for one node.
+
+See Redis's [latency guidance](https://redis.io/docs/latest/operate/rs/monitoring/observability/)
+and [benchmark notes](https://redis.io/docs/latest/operate/oss_and_stack/management/optimization/benchmarks/).
+
+### Relational database
+
+- **Latency:** budget roughly **1–10 ms** for a simple, cache-hot indexed read
+  and **5–20 ms** for a short durable write in the same region. Joins,
+  contention, disk misses, synchronous replicas, and cross-region round trips
+  can make either much slower.
+- **Throughput:** a useful single-primary starting range is **10k–50k simple,
+  cache-hot reads/second** and **1k–10k non-trivial write
+  transactions/second**. The proposed 10k–20k writes/second is achievable for
+  favorable workloads, but is too optimistic as a generic assumption.
+- **Capacity:** think from gigabytes to **tens of TiB per instance**, then
+  partition or shard beyond one machine. For a concrete vendor example, Amazon
+  RDS supports up to **64 TiB** for PostgreSQL and several other engines; this
+  is an RDS limit, not a universal database limit.
+
+See Amazon RDS's [storage limits](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/CHAP_Storage.html).
+
+### Message queues and durable logs
+
+- **Latency:** **1–5 ms** can be possible for a local or memory-first path, but
+  **5–100 ms** is a safer planning range for durable, replicated, end-to-end
+  delivery. Broker acknowledgements and consumer processing are different
+  measurement boundaries.
+- **Throughput:** use **10k–100k durable messages/second per queue or partition**
+  as a conservative starting range. Partitioned logs, streams, and batching can
+  reach **100k–1M+ messages/second**, so 1M is plausible but not a generic
+  per-broker guarantee.
+- **Capacity:** **50 TB is plausible, not a standard maximum**. Estimate
+  `messages/second × average message bytes × retention seconds × replication
+  factor`; ordinary work queues should usually have bounded backlogs, while
+  durable logs may intentionally retain terabytes or more.
+
+For scale, RabbitMQ reports about **80k messages/second** for one quorum queue,
+about **100k** for one classic queue, and millions for well-batched streams in
+its [queue and stream comparison](https://www.rabbitmq.com/docs/compare/kafka).
+
+### Servers
+
+- **Concurrent connections:** **10k–100k mostly idle or lightweight connections
+  per tuned asynchronous node** can be possible. Active requests doing TLS,
+  application work, or large transfers consume much more CPU and bandwidth, so
+  load-test instead of treating 100k as a default.
+- **Machine size:** **8–64 vCPU and 64–512 GiB RAM** describes a medium-to-large
+  server, not a universal standard. Many stateless services need less; large
+  memory-optimized machines offer more.
+- **Upper bound:** **2 TB is not a server maximum**. Current EC2 high-memory
+  instance names cover **3–32 TiB**; specialized hardware aside, CPU frequency
+  alone is not a useful capacity estimate—request cost, vCPU count, memory,
+  network, and storage are what matter.
+
+See the EC2 [instance naming and memory ranges](https://docs.aws.amazon.com/ec2/latest/instancetypes/instance-type-names.html).
+
 ## Before changing the architecture
 
 - Define the target: requests per second, data size, availability, and p95 or
