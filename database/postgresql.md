@@ -27,20 +27,22 @@ Before building on PostgreSQL, a developer should make these choices explicitly:
   eventually consistent replicas or caches only where stale reads are safe.
   Choose synchronous replication when stronger durability justifies added
   commit latency.
-- **Isolation level.** PostgreSQL exposes four SQL-standard names but implements
-  three distinct behaviors:
+- **Isolation level.** This controls what a transaction can see when other
+  transactions are changing data at the same time. Start with PostgreSQL's
+  default, **Read Committed**, unless the entire transaction needs a stable view
+  or must protect a rule spanning multiple rows.
 
-  - **Read Uncommitted:** in PostgreSQL this is an alias for Read Committed, so it
-    never exposes dirty rows. Prefer the clearer Read Committed name.
-  - **Read Committed:** the default; each statement sees a new committed
-    snapshot. Use it for ordinary short CRUD transactions with constraints,
-    atomic statements, or explicit locks handling conflicts.
-  - **Repeatable Read:** one transaction sees one stable snapshot. Use it for
-    multi-query calculations or exports, and retry the whole transaction after
-    a concurrency failure.
-  - **Serializable:** committed transactions behave as if run one at a time.
-    Use it for cross-row business invariants, with short transactions and
-    bounded retries for serialization failures.
+  - **Read Committed:** each SQL statement sees everything committed before that
+    statement began. This is a good default for ordinary CRUD, but reading the
+    same row twice may produce different answers if another transaction commits
+    between the reads.
+  - **Repeatable Read:** the transaction keeps the same view of the database from
+    beginning to end. Choose it when several queries must agree—for example,
+    generating a report—and be prepared to retry if a concurrent write conflicts.
+  - **Serializable:** PostgreSQL makes successful transactions behave as though
+    they ran one at a time, even when they actually overlapped. Choose it for
+    important rules across rows, such as preventing total reservations from
+    exceeding capacity, and retry a transaction if PostgreSQL rejects a conflict.
 
 ### Pros
 
