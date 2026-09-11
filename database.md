@@ -9,6 +9,7 @@ patterns and correctness requirements, not with a product name.
 
 This section starts with general database design principles, compares
 [Change Data Capture and transactional outbox patterns](./database/change-data-capture-outbox.md),
+explains how to [shard a database](./database/sharding.md),
 then applies the principles to systems such as
 [PostgreSQL](./database/postgresql.md).
 
@@ -76,7 +77,8 @@ create a hot partition even when total capacity is ample.
 Range partitioning supports scans but can concentrate sequential writes. Hash
 partitioning distributes load more evenly but makes range queries harder.
 Rebalancing, cross-partition queries, and globally unique identifiers add
-operational complexity.
+operational complexity. The [Sharding](./database/sharding.md) chapter walks
+through the design decisions and failure modes in detail.
 
 ## Availability and consistency
 

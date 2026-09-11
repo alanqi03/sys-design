@@ -24,6 +24,8 @@ project:
     - agent system design
     - multi-agent systems
     - databases
+    - sharding
+    - consistent hashing
     - caching
     - object storage
     - amazon s3
@@ -71,6 +73,7 @@ project:
     - file: database.md
       children:
         - file: database/change-data-capture-outbox.md
+        - file: database/sharding.md
         - file: database/postgresql.md
         - file: database/dynamodb.md
         - file: database/cassandra.md
