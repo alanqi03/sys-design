@@ -63,6 +63,27 @@ favors frequently used entries. Random eviction can be inexpensive and
 surprisingly effective. Large, rarely reused objects can pollute a cache, so an
 admission policy may reject items that are unlikely to pay for their storage.
 
+## Consistency
+
+First decide how harmful a stale cache read would be. The stricter the freshness
+requirement, the less freedom the system has to serve cached data during delays
+or failures.
+
+| Requirement | What to choose | Typical flow and trade-off |
+| --- | --- | --- |
+| **Eventual consistency** | Use **cache-aside** with a TTL and invalidate after database writes. CDN, read-through, and refresh-ahead caching also fit when their staleness is acceptable. | Write the source of truth, then delete or refresh the cached copy. Events can spread invalidations, but until they arrive—or the TTL expires—some readers may see old data. This is usually appropriate for feeds, recommendations, like counts, product descriptions, images, and analytics. |
+| **Strong consistency** | The safest choice is to **bypass the cache for correctness-sensitive reads** and use the database primary. If caching is necessary, use a carefully coordinated **write-through** path. | Do not report success until the durable write commits and readers cannot obtain the older cached version. This needs ordered writes, version checks or compare-and-set, and a failure policy that falls back to the source of truth or rejects the read instead of serving stale data. Use it for balances, inventory reservations, authorization changes, and other invariants. |
+
+Write-through is a useful building block for read-after-write freshness, but it
+does not make the cache and database one atomic transaction. For example, the
+database might commit just before the cache update fails. The design must then
+invalidate the old value, retry safely, or temporarily bypass the cache.
+
+TTL and event-driven invalidation provide a **bounded or usually short stale
+window**, not strict consistency. During a network partition, a strongly
+consistent path must reach the authoritative copy or fail; returning an old
+cached value is choosing availability over consistency.
+
 ## Failure modes
 
 - A **cache stampede** occurs when many callers regenerate the same expired
