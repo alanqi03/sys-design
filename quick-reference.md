@@ -34,6 +34,103 @@ Always state the percentile, measurement boundary, user geography, and whether
 the path is a cache hit or miss. Then divide the target into budgets for the
 client network, gateway, service calls, storage, and safety margin.
 
+## Fast capacity estimation
+
+Use decimal units for quick interview math: **1 KB = 1,000 bytes, 1 GB = 1
+billion bytes, and 1 TB = 1 trillion bytes**. Real systems may report binary
+units such as GiB and TiB, but consistency matters more than converting every
+number perfectly on a whiteboard.
+
+| Estimate | Quick formula |
+| --- | --- |
+| Raw stored data | `records × average bytes per record` |
+| New data per day | `average writes/second × bytes per write × 86,400` |
+| Average operations/second | `operations per day ÷ 86,400` |
+| Peak operations/second | `average operations/second × stated peak factor` |
+| Database reads after caching | `read requests/second × reads per request × (1 - cache hit rate)` |
+| Provisioned cache | `hot data × object overhead × copies ÷ target utilization` |
+
+### Database size example
+
+Suppose the system has **500 million users** and stores **5 KB per user**:
+
+```text
+500M users × 5 KB = 2,500 GB = 2.5 TB of raw user data
+```
+
+That 2.5 TB is only the starting point. Add indexes and row metadata, replicas,
+backups, temporary working space, expected growth, and operational headroom.
+State each factor separately instead of hiding them inside one unexplained
+multiplier.
+
+For append-heavy data, estimate growth from the average rate and retention:
+
+```text
+stored history = writes/second × bytes/write × retention seconds
+```
+
+Use the peak rate to size throughput, but use the time-weighted average rate to
+size long-term storage. A one-hour traffic spike should not be multiplied by 24
+hours unless it truly lasts all day.
+
+### Cache size example
+
+A cache usually holds the **hot working set**, not every database record. If
+10% of those users are active enough to cache:
+
+```text
+50M hot users × 5 KB = 250 GB of raw cached values
+250 GB × 1.25 metadata/allocator overhead × 2 copies ÷ 0.80 utilization
+  ≈ 780 GB provisioned cache memory
+```
+
+The overhead, replication, and target-utilization values are assumptions—say
+them aloud. Also size the cache cluster for operations/second and hot-key load;
+enough memory does not guarantee enough throughput.
+
+### TPS and QPS example
+
+First clarify the unit:
+
+- **QPS or operations/second** counts individual queries or operations.
+- **TPS** counts completed transactions; one transaction may contain several
+  reads or writes.
+- **API RPS** counts requests at the service boundary; one request may create
+  multiple database transactions.
+
+If the system expects **50K writes/second at peak** and each write stores 5 KB:
+
+```text
+peak ingest = 50K × 5 KB = 250 MB/second
+if sustained for one hour = 250 MB × 3,600 = 900 GB
+if sustained all day = 250 MB × 86,400 = 21.6 TB/day
+```
+
+If “write” means one transaction, the database target is 50K write TPS. If ten
+independent writes can safely be batched into each transaction, the target is
+5K TPS but still 50K record writes/second. Benchmark the real transaction,
+including indexes, constraints, logging, and replication.
+
+Caching changes the database read target. For example:
+
+```text
+100K API reads/second × 2 cacheable lookups = 200K cache gets/second
+200K × (1 - 90% hit rate) = 20K database reads/second
+```
+
+### Turn estimates into machines
+
+Calculate both storage-based and throughput-based capacity, then use the larger:
+
+```text
+units for storage = total provisioned bytes ÷ usable bytes per unit
+units for load = peak operations/second ÷ safe tested operations/second per unit
+```
+
+Round up and leave capacity for a node failure, maintenance, rebalancing, and
+growth. Replicas improve availability and may scale reads, but they usually do
+not increase the primary's write throughput.
+
 ## Component ballparks for interviews
 
 Use these as order-of-magnitude starting assumptions, not limits or vendor
