@@ -5,6 +5,7 @@ project:
   description: A practical textbook for designing scalable, reliable distributed systems.
   keywords:
     - system design
+    - system design interview cheatsheet
     - distributed systems
     - networking
     - real-time updates
