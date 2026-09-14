@@ -49,22 +49,26 @@ project:
     - file: basics.md
       children:
         - file: basics/networking.md
-        - file: basics/servers.md
-    - file: connection-protocols.md
-      children:
-        - file: connection-protocols/pub-sub.md
-        - file: connection-protocols/polling.md
-        - file: connection-protocols/server-sent-events.md
-        - file: connection-protocols/websockets.md
-        - file: connection-protocols/webrtc.md
-    - file: api-design.md
-      children:
-        - file: api-design/api-types.md
-        - file: api-design/authentication.md
     - file: api-gateway-load-balancing.md
       children:
         - file: traffic-management/api-gateway.md
         - file: traffic-management/load-balancing.md
+        - file: basics/servers.md
+    - file: patterns.md
+      children:
+        - file: s3-large-blobs.md
+        - file: multi-step-processes.md
+        - file: connection-protocols.md
+          children:
+            - file: connection-protocols/pub-sub.md
+            - file: connection-protocols/polling.md
+            - file: connection-protocols/server-sent-events.md
+            - file: connection-protocols/websockets.md
+            - file: connection-protocols/webrtc.md
+    - file: api-design.md
+      children:
+        - file: api-design/api-types.md
+        - file: api-design/authentication.md
     - file: agent-system-design.md
       children:
         - file: agents/input-processing-planning.md
@@ -84,13 +88,11 @@ project:
       children:
         - file: caching/fundamentals.md
         - file: caching/redis.md
-    - file: s3-large-blobs.md
     - file: queues.md
       children:
         - file: queues/queue-fundamentals.md
         - file: queues/sqs.md
         - file: queues/rabbitmq.md
-    - file: multi-step-processes.md
     - file: streaming.md
       children:
         - file: streaming/streaming-fundamentals.md

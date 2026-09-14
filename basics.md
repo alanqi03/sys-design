@@ -5,8 +5,9 @@ title: Basics
 # Basics
 
 Distributed systems are programs that communicate across a network and run on
-machines that can fail independently. Two foundations therefore come first:
-how machines communicate and how servers turn requests into work.
+machines that can fail independently. Networking therefore comes first: before
+designing larger architectures, understand how remote machines communicate and
+how those calls can fail.
 
 In this part, you will learn to:
 
@@ -19,4 +20,3 @@ In this part, you will learn to:
 The key theme is uncertainty. A remote call can be slow, fail, or complete even
 when the caller never receives the response. Good systems make that uncertainty
 manageable.
-
