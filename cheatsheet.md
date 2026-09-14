@@ -205,8 +205,10 @@ components.
 
 - **Examples:** Amazon SNS, Google Cloud Pub/Sub, NATS, and Redis Pub/Sub for
   ephemeral real-time delivery.
-- **When to use it:** Use pub/sub when one event must fan out to several
-  independent subscribers and the publisher should not know each consumer.
+- **When to use it:** Use pub/sub to refresh or invalidate caches and to push
+  live updates such as chat messages, clicks, sensor readings, or stock prices
+  to many listeners. Choose a durable stream when consumers also need history
+  and replay.
 - **Pros:** Decouples publishers from subscribers and makes adding new consumers
   easier.
 - **Cons:** Delivery and durability vary by product. Ephemeral systems can lose
