@@ -45,6 +45,7 @@ project:
   toc:
     - file: index.md
     - file: quick-reference.md
+    - file: cheatsheet.md
     - file: basics.md
       children:
         - file: basics/networking.md
