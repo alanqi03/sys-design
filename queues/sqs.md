@@ -23,6 +23,45 @@ a group. For a FIFO order queue, use `order_id` or `customer_id` as the message
 group ID. One stuck message blocks later messages in the same group, so a single
 global group sacrifices most parallelism.
 
+## Delayed delivery
+
+SQS can hide a newly sent message for **0 seconds to 15 minutes** before making
+it available to consumers. This is useful for short delays such as “retry in 30
+seconds,” “send this reminder in 10 minutes,” or “do not process this job until
+its dependency has had time to settle.”
+
+```{mermaid}
+sequenceDiagram
+  participant P as Producer
+  participant Q as SQS
+  participant W as Worker
+  P->>Q: SendMessage with 5-minute delay
+  Note over Q: Message is stored but hidden
+  Note over Q: Five minutes pass
+  Q-->>W: Message is now eligible for ReceiveMessage
+  W->>W: Process job
+```
+
+There are two ways to request the initial delay:
+
+- A **delay queue** sets `DelaySeconds` on the queue, so every newly sent message
+  uses that delay. Standard and FIFO queues support this, up to 15 minutes.
+- A **message timer** sets `DelaySeconds` on an individual `SendMessage` call and
+  overrides the queue's default for that message. It is supported by Standard
+  queues, but not by FIFO queues.
+
+The delay is relative to when SQS receives the message; it is not an exact job
+execution time. Once the delay expires, the message becomes *eligible* to be
+received. Actual processing may start later depending on polling, worker
+capacity, backlog, and failures. For an exact future schedule or anything more
+than 15 minutes away, use a scheduler such as Amazon EventBridge Scheduler to
+send the message at the desired time.
+
+Do not confuse a delivery delay with the **visibility timeout**. The delivery
+delay hides a message immediately after it is sent. The visibility timeout
+hides it after a worker receives it, giving that worker time to finish before
+SQS can redeliver it.
+
 ## Worker lifecycle
 
 ```{mermaid}
@@ -71,7 +110,9 @@ redrive failures.
 - Default visibility timeout: **30 seconds**; configurable up to **12 hours**
   from receipt.
 - Message retention: **1 minute to 14 days**; default **4 days**.
-- Queue-level delivery delay: up to **15 minutes**.
+- Queue-level delivery delay: up to **15 minutes** for Standard and FIFO queues.
+- Per-message timer: up to **15 minutes** for Standard queues; unsupported for
+  FIFO queues.
 - Message body: up to **1,024 KiB**.
 - Long polling: up to **20 seconds** per receive request.
 
@@ -108,6 +149,8 @@ retained history and replay.
 
 ## Sources and further reading
 
+- [Amazon SQS delay queues](https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-delay-queues.html)
+- [Amazon SQS message timers](https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-message-timers.html)
 - [Amazon SQS visibility timeout](https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-visibility-timeout.html)
 - [Creating and configuring a Standard queue](https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/creating-sqs-standard-queues.html)
 - [Amazon SQS dead-letter queues](https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-dead-letter-queues.html)
