@@ -162,6 +162,23 @@ components.
   leases or heartbeats, timeouts, retry backoff, dead-letter handling,
   autoscaling on queue age or depth, and graceful shutdown.
 
+### Scheduler / Watcher
+
+- **Examples:** cron, Kubernetes CronJob, Amazon EventBridge Scheduler, Celery
+  Beat, and a long-running service that polls or watches for changes.
+- **When to use it:** Use a scheduler for work that starts at a particular time
+  or interval, such as daily digests, cleanup, and expiring records. Use a
+  watcher or background process to continuously detect changes, poll an external
+  system, or reconcile state that events may have missed.
+- **Pros:** Keeps recurring and maintenance work out of the request path, and a
+  reconciliation loop can repair drift or recover from missed events.
+- **Cons:** Polling adds delay and load; overlapping or duplicate runs can repeat
+  side effects, while a stopped watcher can silently leave work undone.
+- **Important features to know:** Idempotency, a distributed lock or lease when
+  only one instance may run, overlap and concurrency controls, checkpoints or
+  cursors, retry backoff with jitter, run history, time zones, and alerts for
+  missed or failed runs.
+
 ### Object Storage
 
 - **Examples:** Amazon S3, Google Cloud Storage, and Azure Blob Storage.
