@@ -32,6 +32,9 @@ The [Agent System Design](./agent-system-design.md) section applies these
 building blocks to AI applications that retrieve context, make decisions, use
 tools, and coordinate specialized agents.
 
+The [Case Studies](./case-studies.md) section collects short,
+application-specific design notes that show how these choices work together.
+
 ## A framework for design problems
 
 Before drawing boxes, make the problem measurable:

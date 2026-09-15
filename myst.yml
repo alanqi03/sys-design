@@ -99,6 +99,7 @@ project:
         - file: streaming/stream-processing-architectures.md
         - file: streaming/kafka.md
         - file: streaming/flink.md
+    - file: case-studies.md
 
 site:
   template: book-theme
