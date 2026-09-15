@@ -136,9 +136,10 @@ components.
 ### Queue
 
 - **Examples:** Amazon SQS, RabbitMQ, Azure Service Bus, and Google Cloud Tasks.
-- **When to use it:** Use a durable queue when work may finish asynchronously,
-  traffic arrives in bursts, failures require retries, or workers and producers
-  must scale independently.
+- **When to use it:** Use a durable queue to move slow or expensive tasks—such
+  as precomputing feeds, generating reports, or processing media—out of the
+  request path. It also fits bursty traffic, retryable work, and cases where
+  producers and workers must scale independently.
 - **Pros:** Buffers bursts, isolates failures, and lets slow or retryable work
   complete outside the request path.
 - **Cons:** Completion becomes eventual, backlogs need monitoring, and
