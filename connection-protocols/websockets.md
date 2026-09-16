@@ -251,6 +251,10 @@ connections, reconnect rate, messages and bytes per second, send-buffer size,
 and event-loop delay. Enforce a bounded outbound buffer so one slow client
 cannot consume unbounded memory.
 
+See [Managing Connections](../connection-protocols.md#managing-connections) for
+an example of optional consistent-hash routing and Redis Pub/Sub across a
+gateway fleet.
+
 ## Further reading
 
 - [RFC 6455: The WebSocket Protocol](https://www.rfc-editor.org/rfc/rfc6455.html)
