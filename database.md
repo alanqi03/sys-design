@@ -18,6 +18,19 @@ but this book places it under Caching because its most common system-design role
 is accelerating or coordinating access around another source of truth. Its
 chapter also covers the cases where Redis owns durable state.
 
+## Database comparison
+
+| Database and type | Pros | Cons | When to choose it |
+| --- | --- | --- | --- |
+| [PostgreSQL](./database/postgresql.md) — relational | ACID transactions, joins, constraints, flexible SQL, mature tooling | A single primary can bottleneck writes; multi-region active-active writes and sharding take extra work | Default choice for orders, accounts, inventory, and other business data with relationships or correctness-sensitive transactions. |
+| [DynamoDB](./database/dynamodb.md) — managed key-value/document | Predictable key-based access at scale; AWS handles partitioning, replication, and operations | Queries must follow planned keys or indexes; hot keys, scans, and extra indexes can be costly | Choose when access patterns are known, traffic can be distributed across keys, and you want a fully managed low-latency store. |
+| [Cassandra](./database/cassandra.md) — distributed wide-column | High write throughput, horizontal scale, no single primary, multi-datacenter availability | Query-specific tables and denormalization; compaction, repairs, and oversized partitions require operational care | Choose for very large, write-heavy workloads across nodes or regions when queries are predictable and availability matters more than joins or general multi-row transactions. |
+| [Elasticsearch](./database/elasticsearch.md) — search/analytics index | Full-text relevance, filtering, aggregations, and geospatial or vector search | Expensive indexing and reindexing; search visibility can lag writes; no general multi-document transactions | Add it for search or analytics that the primary database cannot serve well, usually as a derived index rather than the system of record. |
+
+These are different tools, not four interchangeable defaults. Start with the
+required queries and invariants; add a specialized store only when a concrete
+workload justifies its modeling and operational costs.
+
 ## Model the workload
 
 Write down the principal entities, expected data volume, read/write ratio, and
