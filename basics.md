@@ -14,6 +14,7 @@ In this part, you will learn to:
 - trace a request from a client to a server;
 - distinguish latency from throughput;
 - recognize the roles of DNS, TCP, TLS, HTTP, proxies, and load balancers;
+- distinguish encryption from signing and know when a system needs both;
 - compare vertical and horizontal scaling; and
 - reason about timeouts, retries, idempotency, and overload.
 

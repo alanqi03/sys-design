@@ -49,6 +49,7 @@ project:
     - file: basics.md
       children:
         - file: basics/networking.md
+        - file: basics/encryption-vs-signing.md
     - file: api-gateway-load-balancing.md
       children:
         - file: traffic-management/api-gateway.md
