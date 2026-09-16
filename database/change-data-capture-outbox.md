@@ -1,9 +1,9 @@
 ---
-title: Change Data Capture vs. Outbox and Queue Patterns
-description: How CDC, transactional outbox, and queue-first designs reliably move database changes between services.
+title: Change Data Capture vs. Transactional Outbox
+description: How CDC and transactional outbox patterns reliably publish database changes between services.
 ---
 
-# Change Data Capture vs. Outbox and Queue Patterns
+# Change Data Capture vs. Transactional Outbox
 
 A service often needs to update its database and tell another system what
 happened. The hard part is making those two effects reliable without a
@@ -13,23 +13,20 @@ distributed transaction.
   from a transaction log, and converts them into a change stream.
 - A **transactional outbox** writes an intentional domain event beside the
   business data in the same database transaction. A relay publishes it later.
-- A **queue-first command** durably stores requested work before a worker changes
-  the database. It makes the operation asynchronous rather than publishing a
-  completed fact.
 
 The patterns can be combined. A common design writes an outbox row and uses CDC
 as the relay that publishes that row to a broker.
 
 ## Quick comparison
 
-| | Raw CDC | Transactional outbox | Queue-first command |
-| --- | --- | --- | --- |
-| Captures | Row changes | Deliberate domain events | Work that should happen |
-| First durable record | Business database change | Business change and outbox row together | Queue message |
-| Application change | Often little for existing tables | Must create an event in the transaction | API and workflow become asynchronous |
-| Event contract | Coupled to storage schema unless transformed | Designed by the owning service | Command schema |
-| Best fit | Replication, search, analytics, cache/view updates | Service integration and business events | Slow, bursty, or retryable background work |
-| Main cost | Connector operations and schema coupling | Outbox table, relay, cleanup, duplicate delivery | Eventual completion and idempotent workers |
+| | Raw CDC | Transactional outbox |
+| --- | --- | --- |
+| Captures | Row changes | Deliberate domain events |
+| First durable record | Business database change | Business change and outbox row together |
+| Application change | Often little for existing tables | Must create an event in the transaction |
+| Event contract | Coupled to storage schema unless transformed | Designed by the owning service |
+| Best fit | Replication, search, analytics, cache/view updates | Service integration and business events |
+| Main cost | Connector operations and schema coupling | Outbox table, relay, cleanup, duplicate delivery |
 
 ## The dual-write problem
 
@@ -181,30 +178,6 @@ change. It does not make broker publication exactly once. A relay can publish an
 event and crash before recording progress, so it publishes the same event again
 after restart.
 
-## Queue-First Commands
-
-Sometimes the correct first durable action is to enqueue work:
-
-```{mermaid}
-flowchart LR
-  client[Client] -->|POST /exports| api[API]
-  api -->|GenerateExport command| queue[[Durable queue]]
-  api -->|202 + job ID| client
-  queue --> worker[Worker]
-  worker --> db[(Job state)]
-  worker --> files[(Object storage)]
-```
-
-This is a good fit for reports, media processing, notifications, imports, and
-other work that can finish later. The queue absorbs bursts and retries failed
-workers. See [Queue Fundamentals](../queues/queue-fundamentals.md).
-
-A queue-first design is not a substitute for an outbox when a synchronous
-database transaction must publish a fact afterward. Publishing a queue message
-and updating a separate database are still two writes unless one is derived
-reliably from the other. Queue workers must also be idempotent because a message
-can be delivered again after an ambiguous failure.
-
 ## The common hybrid: Outbox plus CDC
 
 ```{mermaid}
@@ -226,7 +199,7 @@ the organization already operates CDC connectors.
 
 Design every option around at-least-once delivery:
 
-1. Give each event or command a stable ID.
+1. Give each event a stable ID.
 2. Partition by the entity whose order matters, not by a random event ID.
 3. Make the consumer's state change and deduplication record atomic when
    possible.
@@ -258,8 +231,6 @@ or separate database can still happen twice after a crash.
   existing tables whose changes must all be observed.
 - Choose a **transactional outbox** when the service should publish a stable,
   intentional business event.
-- Choose a **queue-first command** when accepting work durably now and completing
-  it asynchronously is part of the API contract.
 - Choose **outbox plus CDC** when you want domain events without operating a
   polling publisher.
 
