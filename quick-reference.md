@@ -5,6 +5,20 @@ description: A decision guide for improving service durability, fault tolerance,
 
 # Quick Reference
 
+## Recommended system design interview structure
+
+Use this as a starting point for a **45-minute interview**. Adjust the timing
+to the question and spend more of the deep dive on its hardest requirements.
+
+| Step | What to cover | Time |
+| --- | --- | --- |
+| **1. Clarify requirements** | Core workflows, scope, latency, availability, consistency | 5 min |
+| **2. Estimate scale** | Average/peak QPS, read/write ratio, storage or bandwidth when relevant | 3 min |
+| **3. Sketch APIs and data models** | Main endpoints, core entities, identifiers, relationships, access patterns | 5 min |
+| **4. Draw the high-level design** | Clients, services, databases, caches, queues; walk through a read and a write | 10 min |
+| **5. Deep dives** | The hardest requirements: partitioning, concurrency, hot keys, failures, etc. | 17 min |
+| **6. Wrap up** | Key tradeoffs, remaining bottlenecks, and how the design could evolve | 5 min |
+
 Use this page to turn a system symptom into candidate design changes. These are
 starting points, not automatic fixes: identify the bottleneck, choose the
 smallest change that addresses it, and load-test the complete path.
