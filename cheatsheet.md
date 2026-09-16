@@ -83,8 +83,9 @@ system.
 
 ### Application Service
 
-- **Examples:** Stateless HTTP or gRPC services running on virtual machines,
-  containers, Kubernetes, ECS, or serverless functions.
+- **Examples:** Amazon ECS on Fargate (AWS-managed) or Kubernetes (open-source).
+  Both run your application service; they are deployment platforms, not the
+  business-logic service itself.
 - **When to use it:** Use a service to own business logic and APIs. Split it
   into additional services only when ownership, scaling, deployment, or failure
   boundaries justify the extra network calls.
@@ -116,12 +117,13 @@ system.
 
 Add these in roughly this order of consideration: first improve the main read
 and write paths, then introduce specialized asynchronous or operational
-components.
+components. Each pair below is an interview-friendly choice between an
+AWS-managed service and a self-managed open-source option; they are not always
+feature-for-feature equivalents.
 
 ### Cache
 
-- **Examples:** Redis, Memcached, an in-process cache, and a CDN for static
-  content.
+- **Examples:** Amazon ElastiCache (AWS-managed) or Redis 8 (open-source).
 - **When to use it:** Add a cache when repeated reads or expensive computations
   dominate latency or database load and the product can define acceptable
   staleness and invalidation behavior.
@@ -135,7 +137,7 @@ components.
 
 ### Queue
 
-- **Examples:** Amazon SQS, RabbitMQ, Azure Service Bus, and Google Cloud Tasks.
+- **Examples:** Amazon SQS (AWS-managed) or RabbitMQ (open-source).
 - **When to use it:** Use a durable queue to move slow or expensive tasks—such
   as precomputing feeds, generating reports, or processing media—out of the
   request path. It also fits bursty traffic, retryable work, and cases where
@@ -150,22 +152,29 @@ components.
 
 ### Worker Pool
 
-- **Examples:** Celery, Sidekiq, BullMQ, Kubernetes workers, and AWS Lambda
-  consuming queue messages.
+- **Examples:** Amazon ECS on Fargate (AWS-managed) or Kubernetes
+  Deployments/Jobs (open-source).
 - **When to use it:** Add workers to execute queued tasks, CPU-heavy jobs, batch
-  work, or slow external calls without tying up API request capacity.
+  work, or slow external calls without tying up API request capacity. For an
+  agent that writes files or runs code, give each job an isolated, disposable
+  workspace instead of sharing the API server's filesystem.
 - **Pros:** Moves slow work off the request path, processes jobs in parallel,
   and scales independently from API servers.
 - **Cons:** Retries can repeat side effects, poison tasks can block progress,
-  and excessive concurrency can overload downstream systems.
+  and excessive concurrency can overload downstream systems. Sandboxed jobs
+  also cost more to start and operate than ordinary shared workers.
 - **Important features to know:** Idempotent handlers, concurrency limits,
   leases or heartbeats, timeouts, retry backoff, dead-letter handling,
-  autoscaling on queue age or depth, and graceful shutdown.
+  autoscaling on queue age or depth, and graceful shutdown. For agentic work,
+  distinguish a worker process from its execution environment: use a container
+  with a temporary filesystem for trusted jobs, or a stronger VM/microVM
+  sandbox for untrusted code; limit filesystem, network, and credentials, then
+  persist needed outputs to object storage before destroying the workspace.
 
 ### Scheduler / Watcher
 
-- **Examples:** cron, Kubernetes CronJob, Amazon EventBridge Scheduler, Celery
-  Beat, and a long-running service that polls or watches for changes.
+- **Examples:** Amazon EventBridge Scheduler (AWS-managed) or Kubernetes
+  CronJob (open-source).
 - **When to use it:** Use a scheduler for work that starts at a particular time
   or interval, such as daily digests, cleanup, and expiring records. Use a
   watcher or background process to continuously detect changes, poll an external
@@ -181,7 +190,7 @@ components.
 
 ### Object Storage
 
-- **Examples:** Amazon S3, Google Cloud Storage, and Azure Blob Storage.
+- **Examples:** Amazon S3 (AWS-managed) or Ceph Object Gateway (open-source).
 - **When to use it:** Use object storage for images, video, documents, backups,
   exports, or other large immutable blobs that do not belong in database rows.
 - **Pros:** Stores very large blobs cheaply with high durability and massive
@@ -194,7 +203,8 @@ components.
 
 ### CDN
 
-- **Examples:** CloudFront, Cloudflare, Fastly, and Akamai.
+- **Examples:** Amazon CloudFront (AWS-managed) or Varnish Cache (open-source
+  caching proxy; you must deploy it at edge locations to approximate a CDN).
 - **When to use it:** Add a CDN when static or cacheable content is requested by
   geographically distributed users or origin bandwidth and latency are high.
 - **Pros:** Serves content near users, lowers latency, and removes bandwidth and
@@ -206,8 +216,8 @@ components.
 
 ### Search Index
 
-- **Examples:** Elasticsearch, OpenSearch, Solr, and a database's built-in
-  full-text search for smaller workloads.
+- **Examples:** Amazon OpenSearch Service (AWS-managed) or OpenSearch
+  (open-source).
 - **When to use it:** Add a dedicated index when users need relevance-ranked
   text search, autocomplete, faceting, or complex filtering that the primary
   database cannot serve efficiently.
@@ -221,8 +231,7 @@ components.
 
 ### Pub/Sub
 
-- **Examples:** Amazon SNS, Google Cloud Pub/Sub, NATS, and Redis Pub/Sub for
-  ephemeral real-time delivery.
+- **Examples:** Amazon SNS (AWS-managed) or NATS (open-source).
 - **When to use it:** Use pub/sub to refresh or invalidate caches and to push
   live updates such as chat messages, clicks, sensor readings, or stock prices
   to many listeners. Choose a durable stream when consumers also need history
@@ -238,7 +247,8 @@ components.
 
 ### Streaming Platform
 
-- **Examples:** Apache Kafka, Amazon Kinesis, Apache Pulsar, and Redpanda.
+- **Examples:** Amazon Kinesis Data Streams (AWS-managed) or Apache Kafka
+  (open-source).
 - **When to use it:** Use a stream when events must be retained and replayed,
   several consumer groups need independent history, or high-throughput ordered
   processing is required.
@@ -253,8 +263,8 @@ components.
 
 ### Stream Processor
 
-- **Examples:** Apache Flink, Kafka Streams, Spark Structured Streaming, and
-  managed Dataflow services.
+- **Examples:** Amazon Managed Service for Apache Flink (AWS-managed) or Apache
+  Flink (open-source).
 - **When to use it:** Add one when an event stream must continuously produce
   windows, joins, alerts, aggregates, or materialized read models.
 - **Pros:** Builds derived results incrementally instead of recalculating them
@@ -267,8 +277,8 @@ components.
 
 ### Real-Time Connection Layer
 
-- **Examples:** WebSocket gateways, Server-Sent Events endpoints, Socket.IO,
-  managed WebSocket services, and WebRTC for peer media.
+- **Examples:** Amazon API Gateway WebSocket APIs (AWS-managed) or Socket.IO
+  (open-source, self-hosted).
 - **When to use it:** Use SSE for one-way server updates, WebSockets for
   bidirectional low-latency commands, and WebRTC for peer-to-peer audio, video,
   or data.
@@ -283,8 +293,7 @@ components.
 
 ### Workflow Engine
 
-- **Examples:** Temporal, AWS Step Functions, Google Workflows, and Azure Durable
-  Functions.
+- **Examples:** AWS Step Functions (AWS-managed) or Temporal (open-source).
 - **When to use it:** Use a workflow engine for long-running, multi-step
   processes that must survive crashes, wait on timers or callbacks, and recover
   with retries or compensating actions.
@@ -298,8 +307,8 @@ components.
 
 ### Observability
 
-- **Examples:** OpenTelemetry, Prometheus and Grafana, Datadog, CloudWatch, and
-  an ELK or OpenSearch logging stack.
+- **Examples:** Amazon CloudWatch (AWS-managed) or the Prometheus/Grafana stack
+  (open-source).
 - **When to use it:** Instrument every production component; emphasize it on the
   whiteboard when availability, latency, incident detection, or capacity
   planning is an explicit requirement.
