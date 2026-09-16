@@ -37,7 +37,7 @@ Always state the percentile, measurement boundary, user geography, and whether
 the path is a cache hit or miss. Then divide the target into budgets for the
 client network, gateway, service calls, storage, and safety margin.
 
-## Fast capacity estimation
+## Estimating TPS and Capacity
 
 Use decimal units for quick interview math: **1 KB = 1,000 bytes, 1 GB = 1
 billion bytes, and 1 TB = 1 trillion bytes**. Real systems may report binary
@@ -48,10 +48,35 @@ number perfectly on a whiteboard.
 | --- | --- |
 | Raw stored data | `records × average bytes per record` |
 | New data per day | `average writes/second × bytes per write × 86,400` |
-| Average operations/second | `operations per day ÷ 86,400` |
+| Average operations/second (interview shortcut) | `operations per day ÷ 100,000` |
 | Peak operations/second | `average operations/second × stated peak factor` |
 | Database reads after caching | `read requests/second × reads per request × (1 - cache hit rate)` |
 | Provisioned cache | `hot data × object overhead × copies ÷ target utilization` |
+
+### Estimate QPS from daily active users
+
+For interview math, round a day from 86,400 to **100,000 seconds**:
+
+$$
+\text{Average QPS} \approx
+\frac{\text{DAU} \times \text{requests per user per day}}{100{,}000}
+$$
+
+For **10 million daily active users (DAU)** making **20 requests each per day**:
+
+$$
+\frac{10{,}000{,}000 \times 20}{100{,}000} = 2{,}000
+\text{ average QPS}
+$$
+
+With a **5× peak multiplier**, plan for roughly **10,000 peak QPS**. The
+100,000-second shortcut underestimates the exact average by about **14%**,
+which is usually acceptable for rough sizing. Say the assumption aloud: “I’ll
+round a day to 100,000 seconds for easy math.”
+
+**Mental rule:** Every **1 million daily requests** is roughly **10 average
+QPS**. This estimates requests at the API; database TPS depends on how many
+transactions each request performs.
 
 ### Database size example
 
@@ -75,64 +100,6 @@ stored history = writes/second × bytes/write × retention seconds
 Use the peak rate to size throughput, but use the time-weighted average rate to
 size long-term storage. A one-hour traffic spike should not be multiplied by 24
 hours unless it truly lasts all day.
-
-### Cache size example
-
-A cache usually holds the **hot working set**, not every database record. If
-10% of those users are active enough to cache:
-
-```text
-50M hot users × 5 KB = 250 GB of raw cached values
-250 GB × 1.25 metadata/allocator overhead × 2 copies ÷ 0.80 utilization
-  ≈ 780 GB provisioned cache memory
-```
-
-The overhead, replication, and target-utilization values are assumptions—say
-them aloud. Also size the cache cluster for operations/second and hot-key load;
-enough memory does not guarantee enough throughput.
-
-### TPS and QPS example
-
-First clarify the unit:
-
-- **QPS or operations/second** counts individual queries or operations.
-- **TPS** counts completed transactions; one transaction may contain several
-  reads or writes.
-- **API RPS** counts requests at the service boundary; one request may create
-  multiple database transactions.
-
-If the system expects **50K writes/second at peak** and each write stores 5 KB:
-
-```text
-peak ingest = 50K × 5 KB = 250 MB/second
-if sustained for one hour = 250 MB × 3,600 = 900 GB
-if sustained all day = 250 MB × 86,400 = 21.6 TB/day
-```
-
-If “write” means one transaction, the database target is 50K write TPS. If ten
-independent writes can safely be batched into each transaction, the target is
-5K TPS but still 50K record writes/second. Benchmark the real transaction,
-including indexes, constraints, logging, and replication.
-
-Caching changes the database read target. For example:
-
-```text
-100K API reads/second × 2 cacheable lookups = 200K cache gets/second
-200K × (1 - 90% hit rate) = 20K database reads/second
-```
-
-### Turn estimates into machines
-
-Calculate both storage-based and throughput-based capacity, then use the larger:
-
-```text
-units for storage = total provisioned bytes ÷ usable bytes per unit
-units for load = peak operations/second ÷ safe tested operations/second per unit
-```
-
-Round up and leave capacity for a node failure, maintenance, rebalancing, and
-growth. Replicas improve availability and may scale reads, but they usually do
-not increase the primary's write throughput.
 
 ## Component ballparks for interviews
 
