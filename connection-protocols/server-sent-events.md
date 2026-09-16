@@ -80,7 +80,7 @@ waste capacity.
 
 - Use asynchronous servers and track open connections, bytes, and disconnects.
 - Disable proxy buffering and set idle timeouts above the heartbeat interval.
-- Fan events from a broker or pub/sub layer to stateless SSE gateways.
+- Fan events from a broker or pub/sub layer to SSE servers.
 - Apply per-client buffering limits; disconnect a slow consumer rather than
   letting its memory grow without bound.
 - Authenticate when opening the stream and revalidate long-lived sessions as

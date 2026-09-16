@@ -53,52 +53,52 @@ infrastructure, and scale requirements.
 
 ## Managing Connections
 
-With SSE or WebSockets, a client keeps a connection open to **one** gateway.
-That gateway knows which users or chat rooms its local connections belong to;
-another gateway does not automatically know about those sockets. For example,
-Alice and Bob may be in the same chat room but connected to different gateways.
+With SSE or WebSockets, a client keeps a connection open to **one** server.
+That server knows which users or chat rooms its local connections belong to;
+another server does not automatically know about those sockets. For example,
+Alice and Bob may be in the same chat room but connected to different servers.
 
 ```{mermaid}
 flowchart LR
   Alice[Alice] -->|connect| LB[Ingress]
   Bob[Bob] -->|connect| LB
-  LB -->|Alice's user ID| GA[Gateway A]
-  LB -->|Bob's user ID| GB[Gateway B]
-  GA -->|send message| Chat[Chat service]
+  LB -->|Alice's user ID| SA[Server A]
+  LB -->|Bob's user ID| SB[Server B]
+  SA -->|send message| Chat[Chat service]
   Chat --> DB[(Messages database)]
   Chat -->|publish room:42 update| Redis[Redis Pub/Sub]
-  Redis --> GA
-  Redis --> GB
-  GA -->|push update| Alice
-  GB -->|push update| Bob
+  Redis --> SA
+  Redis --> SB
+  SA -->|push update| Alice
+  SB -->|push update| Bob
 ```
 
-### Consistent hashing, ELI18
+### Consistent hashing
 
 Think of **consistent hashing** as a seating chart for new connections: hash a
 stable value such as `userId`, then send that user's connection to its assigned
-gateway. If a gateway is added or removed, only some users get a new assignment
+server. If a server is added or removed, only some users get a new assignment
 instead of reshuffling everyone. The ingress must actually route using that
 stable key; an ordinary round-robin load balancer does not do this by itself.
 
-This is **optional**. A WebSocket stays on the gateway that accepted it even
+This is **optional**. A WebSocket stays on the server that accepted it even
 without consistent hashing. Hashing can make placement predictable, but it does
-not copy a socket to another gateway or deliver a message to everyone in a
-room. Existing connections stay put until they disconnect; after a gateway
+not copy a socket to another server or deliver a message to everyone in a
+room. Existing connections stay put until they disconnect; after a server
 failure, clients reconnect and resubscribe. Watch for uneven load from very
 active users.
 
-### Redis Pub/Sub, ELI18
+### Redis Pub/Sub
 
-Redis Pub/Sub is the **intercom between gateways**. Each gateway with local
+Redis Pub/Sub is the **intercom between servers**. Each server with local
 listeners for `room:42` subscribes to that channel. After the chat service
 saves a message, it publishes an update (often a message ID) to `room:42`.
-Redis sends the update to subscribed gateways, and each gateway pushes it to
+Redis sends the update to subscribed servers, and each server pushes it to
 its own connected clients. This works whether connections were placed by
 consistent hashing or by a regular load balancer.
 
 Pub/Sub is for **live notification, not message storage**: a disconnected
-gateway misses updates, and Redis does not replay them. Keep chat messages in
+server misses updates, and Redis does not replay them. Keep chat messages in
 the database and fetch missed messages on reconnect. If downstream processing
 must never miss an event, use an outbox plus a durable stream or queue instead.
 
@@ -107,7 +107,7 @@ must never miss an event, use an outbox plus a durable stream or queue instead.
 - Does data flow client-to-server, server-to-client, or both?
 - How stale may an update be: minutes, seconds, or milliseconds?
 - Is the payload occasional JSON, a continuous event feed, or live media?
-- How many simultaneous connections must gateways and servers hold?
+- How many simultaneous connections must servers hold?
 - What happens on reconnect: resume, replay, deduplicate, or accept data loss?
 - Can proxies, load balancers, and firewalls carry long-lived connections?
 

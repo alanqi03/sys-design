@@ -1,6 +1,6 @@
 ---
 title: Pub/Sub and RSS Feeds
-description: An ELI18 guide to publish-subscribe messaging, fan-out, delivery behavior, and how RSS feeds fit the subscription model.
+description: A guide to publish-subscribe messaging, fan-out, delivery behavior, and how RSS feeds fit the subscription model.
 ---
 
 # Pub/Sub and RSS Feeds
