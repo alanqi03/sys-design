@@ -24,6 +24,9 @@ project:
     - load balancing
     - agent system design
     - multi-agent systems
+    - agent loop
+    - model context protocol
+    - sandboxing
     - databases
     - sharding
     - consistent hashing
@@ -72,11 +75,10 @@ project:
         - file: api-design/authentication.md
     - file: agent-system-design.md
       children:
-        - file: agents/input-processing-planning.md
-        - file: agents/context-retrieval.md
-        - file: agents/reasoning-decision-making.md
-        - file: agents/tool-execution.md
-        - file: agents/evaluation-feedback-response.md
+        - file: agents/orchestrator-layer.md
+        - file: agents/tool-layer.md
+        - file: agents/platform.md
+        - file: agents/diagrams.md
     - file: database.md
       children:
         - file: database/change-data-capture-outbox.md

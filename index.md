@@ -29,8 +29,9 @@ stateful building blocks used in most large systems: databases, caches, queues,
 and streams.
 
 The [Agent System Design](./agent-system-design.md) section applies these
-building blocks to AI applications that retrieve context, make decisions, use
-tools, and coordinate specialized agents.
+building blocks to AI agents: the orchestrator that runs the agent loop, the
+tool layer that executes its actions, and the platform that runs it in
+production.
 
 The [Case Studies](./case-studies.md) section collects short,
 application-specific design notes that show how these choices work together.
