@@ -7,368 +7,184 @@ description: A one-page, system-design summary of PostgreSQL.
 
 ## The one-page summary
 
-PostgreSQL (often called Postgres) is an open-source relational database. It can
-safely coordinate thousands of simultaneous operations, enforce business rules,
-recover after a crash, and replicate its data. It is an excellent default for
-applications whose data has relationships or whose correctness matters—orders,
-accounts, inventory, user profiles, billing, and most business software.
+PostgreSQL (Postgres) is an open-source relational database. It is the default
+choice for data with relationships or strict correctness rules: orders,
+accounts, inventory, billing.
+
+### Example
+
+An online store keeps customers, products, and orders in related tables:
+
+```sql
+CREATE TABLE products (
+  id    BIGINT PRIMARY KEY,
+  name  TEXT NOT NULL,
+  stock INT  NOT NULL CHECK (stock >= 0)
+);
+
+CREATE TABLE orders (
+  id          BIGINT PRIMARY KEY,
+  customer_id BIGINT NOT NULL REFERENCES customers(id),
+  product_id  BIGINT NOT NULL REFERENCES products(id),
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- One query answers "what did customer 42 buy?"
+SELECT p.name, o.created_at
+FROM orders o JOIN products p ON p.id = o.product_id
+WHERE o.customer_id = 42;
+```
+
+The `CHECK` and `REFERENCES` constraints mean the database itself rejects
+negative stock or an order for a missing product.
 
 ### Developer Choices
 
-Before building on PostgreSQL, a developer should make these choices explicitly:
-
-- **Table schema.** Choose tables, column types, keys, nullability, constraints,
-  and normalization based on the domain; plan migrations and partition only when
-  scale or retention requires it.
-- **Indexes.** Index columns used by important lookups, joins, ranges, and sorts,
-  then verify with query plans. Every index consumes space and slows writes, so
-  avoid indexing every column.
-- **Data consistency.** Use the primary for fresh data and invariants; use
-  eventually consistent replicas or caches only where stale reads are safe.
-  Choose synchronous replication when stronger durability justifies added
-  commit latency.
-- **Isolation level.** This controls what a transaction can see when other
-  transactions are changing data at the same time. Start with PostgreSQL's
-  default, **Read Committed**, unless the entire transaction needs a stable view
-  or must protect a rule spanning multiple rows.
-
-  - **Read Committed:** each SQL statement sees everything committed before that
-    statement began. This is a good default for ordinary CRUD, but reading the
-    same row twice may produce different answers if another transaction commits
-    between the reads.
-  - **Repeatable Read:** the transaction keeps the same view of the database from
-    beginning to end. Choose it when several queries must agree—for example,
-    generating a report—and be prepared to retry if a concurrent write conflicts.
-  - **Serializable:** PostgreSQL makes successful transactions behave as though
-    they ran one at a time, even when they actually overlapped. Choose it for
-    important rules across rows, such as preventing total reservations from
-    exceeding capacity, and retry a transaction if PostgreSQL rejects a conflict.
+- **Schema.** Tables, column types, keys, and constraints that match the domain.
+- **Indexes.** Add them for important lookups and sorts, and check with
+  `EXPLAIN`. Each index slows writes, so don't index every column.
+- **Primary or replica.** Read fresh or critical data from the primary. Send
+  reads that can be slightly stale to replicas.
+- **Isolation level.** Controls what a transaction sees while others run.
+  - **Read Committed** (default): each statement sees the latest committed data.
+    Fine for normal CRUD.
+  - **Repeatable Read:** the whole transaction sees one snapshot. Good for
+    reports where several queries must agree.
+  - **Serializable:** transactions behave as if run one at a time. Use it for
+    rules across rows, like "total bookings ≤ room capacity", and retry when
+    Postgres reports a conflict.
 
 ### Pros
 
-1. **Strong transactions and data integrity.** PostgreSQL provides ACID
-   transactions, isolation levels, constraints, and foreign keys that protect
-   invariants under concurrent writes.
-2. **Excellent read and query performance.** A mature optimizer, several index
-   families, joins, and parallel execution support point lookups and complex
-   reporting.
-3. **Rich features.** JSONB, arrays, full-text search, custom types, and
-   extensions cover many workloads without another data store.
-4. **Excellent tooling and ecosystem.** Mature drivers, managed offerings,
-   backup and migration tools, connection poolers, and observability integrations
-   make PostgreSQL easy to adopt and operate.
+1. **Strong correctness:** ACID transactions, constraints, and foreign keys.
+2. **Flexible queries:** joins, aggregates, and a mature query planner.
+3. **Many features in one place:** JSONB, full-text search, PostGIS for
+   location, and `pgvector` for embeddings.
+4. **Huge ecosystem:** managed hosting everywhere, plus mature tools and drivers.
 
 ### Cons
 
-- **Writes are harder to scale than reads.** A normal PostgreSQL cluster accepts
-  writes on one primary, and durable commits wait on WAL storage; read replicas
-  do not increase primary write throughput.
-- **It is not a globally distributed database out of the box.** Multi-region,
-  active-active writes need external tooling or sharding; synchronous replication
-  adds latency, while asynchronous replication permits lag and possible loss.
-- **MVCC needs housekeeping.** Autovacuum must reclaim old row versions or tables
-  and indexes can bloat.
-- **Connections and tuning need attention.** PostgreSQL traditionally uses a
-  process per connection, so large fleets often need a pooler plus query,
-  memory, and checkpoint tuning.
+- **One primary takes all writes.** Replicas add read capacity, not write
+  capacity.
+- **Not globally distributed by default.** Writing in several regions at once
+  needs extra tooling or sharding.
+- **Needs upkeep.** Old row versions must be cleaned up by autovacuum, and each
+  connection is a process, so large fleets need a connection pooler such as
+  PgBouncer.
 
 ### Numbers to Know
 
-For an early system-design estimate, think **thousands of non-trivial write
-transactions per second** and **tens of thousands of simple, cache-hot reads per
-second** on a well-sized single primary—not as limits, but as signals for when to
-benchmark.
+On one well-sized primary, expect **thousands of write transactions per second**
+and **tens of thousands of simple reads per second**. Treat these as a cue to
+benchmark, not as hard limits.
 
 ### Scaling Reads
 
-- **Optimize first.** Use query plans and workload-shaped indexes, eliminate N+1
-  queries, and keep planner statistics current.
-- **Scale up.** Add RAM for a larger cache, CPU for concurrent queries, faster
-  storage for cache misses, and a pooler to control connections.
-- **Cache repeated work.** Application caches, CDNs, and materialized views trade
-  some freshness for fewer database reads.
-- **Add read replicas.** Route stale-tolerant traffic to hot standbys, but keep
-  fresh, transactional, and read-after-write queries on the primary.
-- **Isolate analytics.** Run long scans on a dedicated replica or warehouse so
-  they do not compete with transactional requests.
+1. Fix slow queries and add the right indexes.
+2. Use a bigger machine with more RAM, so more data stays in memory.
+3. Cache repeated reads (Redis, CDN).
+4. Add read replicas for reads that can be slightly stale.
+5. Move analytics to a separate replica or data warehouse.
 
 ### Scaling Writes
 
-- **Make writes cheaper.** Keep transactions short, batch work, use `COPY` for
-  bulk loads, remove unnecessary indexes, and avoid contention on hot rows.
-- **Scale up the primary.** More CPU, RAM, storage IOPS, and lower WAL latency
-  raise single-writer capacity; connection pooling and checkpoint tuning smooth
-  bursts.
-- **Move secondary work out of band.** Use an outbox plus a stream or queue to
-  update search, analytics, and notifications asynchronously.
-- **Partition carefully.** Native partitioning helps pruning and maintenance but
-  does not spread writes beyond the primary.
-- **Shard last.** Multiple primaries can divide writes by tenant or account, but
-  add routing, rebalancing, and cross-shard transaction complexity.
-
-### Notes
-
-- **Optimistic locking** is a technique where we first read the current state of
-  the business and then attempt to update it. If the state has changed since we
-  read it, our update fails and we can retry. See
-  [Concurrent Writes](#concurrent-writes) for an example.
-- **[Change Data Capture (CDC)](./change-data-capture-outbox.md)** can read
-  committed changes from PostgreSQL's WAL through logical decoding or logical
-  replication. A connector can publish those changes as events to a queue or
-  stream for downstream processing.
-- **PostGIS** is a PostgreSQL extension that adds geographic and geometric data
-  types, spatial indexes, and functions for querying location data.
-- **Full-text search** is built into PostgreSQL and can index, rank, and query
-  natural-language text; extensions can add more specialized search behavior.
+1. Make writes cheaper: short transactions, batched inserts, fewer indexes.
+2. Use a bigger primary.
+3. Do side work asynchronously, such as updating search or sending emails,
+   through an [outbox](./change-data-capture-outbox.md).
+4. Shard across several primaries, as a last resort. See
+   [Sharding](./sharding.md).
 
 ## Overview
 
-### What ACID Means
+### What ACID means
 
-- **Atomicity:** a transaction is all-or-nothing. If transferring money requires
-  a debit and a credit, either both changes commit or neither does.
-- **Consistency:** a successful transaction leaves the database obeying its
-  declared rules, such as data types, unique constraints, checks, and foreign
-  keys. The application is still responsible for declaring the right rules.
-- **Isolation:** concurrent transactions are kept from observing unsafe partial
-  results from one another. PostgreSQL offers several isolation levels so an
-  application can trade stricter behavior for more concurrency.
-- **Durability:** after PostgreSQL confirms a commit, the change survives a
-  process or machine crash under the configured durability settings. WAL is the
-  key mechanism behind this guarantee.
+Using a $50 transfer from account 101 to account 202:
+
+- **Atomicity:** the debit and the credit both happen, or neither does.
+- **Consistency:** constraints hold afterward, e.g. no balance goes negative.
+- **Isolation:** another transaction never sees the money "in flight."
+- **Durability:** once committed, the transfer survives a crash.
 
 (concurrent-writes)=
-### Concurrent Writes
+### Concurrent writes
 
-Two requests can read the same value and then make incompatible decisions. For
-example, two buyers may both see one item in stock. Put correctness-sensitive
-read-modify-write logic inside the database using an atomic statement,
-pessimistic locking, optimistic concurrency, or a stricter isolation level.
+**Problem:** one item is left in stock. Two buyers both read `stock = 1` and
+both buy it. There are four standard fixes.
 
-#### Prefer one atomic statement when possible
-
-Let PostgreSQL test the precondition and change the row as one operation:
+**1. One atomic statement (best when it fits).** Check and update in one step:
 
 ```sql
-UPDATE products
-SET stock = stock - 1
+UPDATE products SET stock = stock - 1
 WHERE id = 42 AND stock > 0
-RETURNING stock;
+RETURNING stock;   -- 0 rows returned = sold out
 ```
 
-One returned row means the reservation succeeded; zero rows means it was out of
-stock. This avoids a separate `SELECT` whose result could become stale before
-the `UPDATE`.
-
-#### Pessimistic concurrency: lock before deciding
-
-Pessimistic concurrency assumes a conflict is likely. `SELECT ... FOR UPDATE`
-locks the selected row until the transaction ends, so another writer or locker
-must wait:
+**2. Pessimistic locking.** Lock the row so the second buyer waits:
 
 ```sql
 BEGIN;
-
-SELECT stock
-FROM products
-WHERE id = 42
-FOR UPDATE;
-
--- Validate stock and calculate the change in application code.
+SELECT stock FROM products WHERE id = 42 FOR UPDATE;  -- the other buyer blocks here
 UPDATE products SET stock = stock - 1 WHERE id = 42;
-
 COMMIT;
 ```
 
-Choose this when contention is common, the decision depends on the latest row,
-or retrying expensive work would be undesirable. Keep the transaction short,
-never wait for a user or network service while holding a lock, acquire multiple
-locks in a consistent order, and set a lock timeout. These habits reduce long
-waits and deadlocks.
+Good when conflicts are common. Keep the transaction short.
 
-#### Optimistic concurrency: reject a stale write
-
-Optimistic concurrency assumes conflicts are uncommon. Read a version with the
-row, then make the version part of the update condition:
+**3. Optimistic locking.** Don't lock; instead, fail if someone changed the row
+since you read it:
 
 ```sql
--- The application previously read stock = 8 and version = 7.
-UPDATE products
-SET stock = 7,
-    version = version + 1
-WHERE id = 42 AND version = 7
-RETURNING version;
+-- You read the row earlier: stock = 8, version = 7.
+UPDATE products SET stock = 7, version = version + 1
+WHERE id = 42 AND version = 7;   -- 0 rows = someone else won; reload and retry
 ```
 
-If another transaction changed the row first, this returns zero rows. Reload the
-current state and retry the **entire business operation** with bounded attempts
-and jitter, or return a conflict to the caller. This approach avoids holding a
-lock while a user edits a form, but repeated retries perform poorly on a hot
-row. A timestamp can be used as a token, but an integer version is simpler and
-does not depend on clock precision.
+Good when conflicts are rare, or when a user spends time editing a form.
 
-#### Build one atomic transaction
-
-When a business action changes several rows, wrap all database effects in one
-transaction. This transfer either debits, credits, and records the ledger entry
-together, or rolls them all back:
+**4. A transaction across several rows.** For the transfer:
 
 ```sql
 BEGIN;
-
--- Lock in a stable order so concurrent transfers do the same.
-SELECT id
-FROM accounts
-WHERE id IN (101, 202)
-ORDER BY id
-FOR UPDATE;
-
-UPDATE accounts
-SET balance_cents = balance_cents - 5000
-WHERE id = 101 AND balance_cents >= 5000
-RETURNING id;
-
--- If the debit returned no row, the application issues ROLLBACK.
-UPDATE accounts
-SET balance_cents = balance_cents + 5000
-WHERE id = 202
-RETURNING id;
-
-INSERT INTO ledger_entries (transfer_id, from_id, to_id, amount_cents)
-VALUES ('tx_987', 101, 202, 5000);
-
-COMMIT;
+UPDATE accounts SET balance = balance - 50 WHERE id = 101 AND balance >= 50;
+UPDATE accounts SET balance = balance + 50 WHERE id = 202;
+INSERT INTO ledger (from_id, to_id, amount) VALUES (101, 202, 50);
+COMMIT;   -- roll back instead if the first UPDATE changed 0 rows
 ```
 
-The application must verify that both account updates returned the expected
-row, otherwise it rolls back. Enforce invariants with constraints as a final
-safety net, and use a unique request or transfer ID to make retries idempotent.
-For invariants spanning rows that cannot be locked cleanly, use `SERIALIZABLE`
-and retry the complete transaction after a serialization failure. Deadlock
-victims also need a complete retry.
-
-A database transaction cannot atomically include an ordinary email, HTTP call,
-or message-broker publish. Commit the business change and an outbox row in the
-same transaction, then publish the outbox asynchronously.
-
-#### Choosing an approach
-
-| Situation | Starting choice |
+| Situation | Use |
 | --- | --- |
-| A change can be expressed as one conditional `UPDATE` | Atomic statement |
-| Conflicts are common or the current row must remain stable | Pessimistic row lock |
-| Conflicts are rare or work includes user think time | Optimistic version check |
-| An invariant spans multiple rows or queries | Atomic transaction, locks, constraints, and possibly `SERIALIZABLE` |
+| The change fits in one `UPDATE ... WHERE` | Atomic statement |
+| Conflicts are common | Pessimistic lock |
+| Conflicts are rare, or a user is editing | Optimistic version check |
+| A rule spans several rows | Transaction, possibly `SERIALIZABLE` |
 
-### How It Works
+### How it works
 
-#### Connections and processes
-
-PostgreSQL is a client/server system. A main server process accepts connections
-and normally gives each connection its own backend process. That process parses
-SQL, asks the query planner for an execution plan, and runs the plan. A
-connection pooler lets many application connections share a smaller, controlled
-number of database connections.
-
-#### Storage and memory
-
-Tables and indexes are persisted on disk as files divided into fixed-size pages,
-normally 8 KiB each. PostgreSQL does **not** load an entire table into memory
-before using it. Its shared-buffer cache holds a working set of recently or
-frequently accessed pages; the operating system may cache those files too. If a
-needed page is absent from both caches, PostgreSQL reads it from storage. More
-RAM helps when the active data and indexes can remain cached, but large tables
-can be queried a page at a time.
-
-#### What happens on a read
-
-1. PostgreSQL parses the SQL and validates names, types, and permissions.
-2. The planner compares possible strategies—such as an index scan, sequential
-   scan, join order, or parallel plan—using table statistics and estimated cost.
-3. The executor follows the chosen plan and requests the necessary table and
-   index pages. It finds each page in shared buffers or loads it from the OS
-   cache or storage.
-4. PostgreSQL applies filters and checks **MVCC visibility**. Each transaction
-   sees a consistent snapshot, so it reads the row version valid for that
-   snapshot and ignores versions it should not yet—or can no longer—see.
-5. The executor performs any joins, grouping, sorting, or aggregation and returns
-   the result to the client.
-
-Because reads use snapshots, readers normally do not block writers, and writers
-normally do not block readers. They can still compete for CPU, memory, and I/O,
-and explicit locks or schema changes can block work.
-
-#### What happens on a write
-
-1. PostgreSQL finds and locks the rows that must change, preventing conflicting
-   writers from silently overwriting one another.
-2. An `INSERT` creates a row version. An `UPDATE` creates a new version and
-   leaves the old one for transactions whose snapshots still need it. A
-   `DELETE` marks a version as no longer visible rather than immediately erasing
-   its bytes.
-3. PostgreSQL creates **write-ahead log (WAL)** records describing the change and
-   updates the affected table and index pages in memory. These pages are now
-   “dirty.”
-4. On a durable commit, the relevant WAL is flushed to persistent storage before
-   success is returned. The dirty table pages can be written later because a
-   crash can replay WAL to reconstruct the committed state.
-5. Background writers and checkpoints gradually flush dirty pages. Autovacuum
-   later reclaims row versions that no active transaction can see and updates
-   statistics used by the planner.
-
-Indexes speed up reads but make this write path more expensive: each affected
-index may need its own new entry and WAL records.
-
-#### Replication and recovery
-
-The primary can stream WAL to standby servers. A hot standby replays those
-changes and can serve read-only queries. Asynchronous replication keeps primary
-commits fast but allows lag; synchronous replication can wait for a standby and
-therefore adds latency. Archived WAL plus a base backup also enables
-point-in-time recovery. If the primary crashes, PostgreSQL replays WAL so changes
-from committed transactions are restored even if their table pages had not been
-flushed yet.
-
-### Features
-
-- ACID transactions, savepoints, two-phase commit, and read committed,
-  repeatable read, and serializable isolation
-- Primary keys, foreign keys, unique/check/exclusion constraints, and generated
-  columns
-- Joins, common table expressions, recursive queries, window functions, views,
-  and materialized views
-- B-tree, hash, GiST, SP-GiST, GIN, and BRIN indexes, including partial,
-  expression, multicolumn, and covering indexes
-- Rich types including JSON/JSONB, arrays, UUIDs, ranges, network addresses,
-  XML, enums, and user-defined types
-- Full-text search and optional geospatial (PostGIS) and vector (`pgvector`)
-  search through extensions
-- Stored functions/procedures, triggers, notifications, extensions, and foreign
-  data wrappers
-- Declarative range, list, and hash table partitioning
-- Physical streaming replicas, hot standbys, logical replication, WAL archiving,
-  backups, and point-in-time recovery
-- Roles, TLS, row-level security, column privileges, and auditing extensions
+- **Storage:** tables are files of 8 KB pages. Postgres keeps frequently used
+  pages in memory and reads others from disk as needed.
+- **Writes:** a change is first recorded in the **write-ahead log (WAL)**. Once
+  the WAL is on disk the commit is durable, even before the table pages are
+  written. After a crash, Postgres replays the WAL.
+- **MVCC:** an update writes a new row version instead of overwriting the old
+  one. Each transaction reads the versions that match its snapshot, so readers
+  and writers don't block each other. Autovacuum later removes old versions.
+- **Replication:** the primary streams WAL to replicas, which replay it and can
+  serve reads. Replicas usually lag slightly.
+- **CDC:** the same WAL can be streamed as change events.
+  See [CDC](./change-data-capture-outbox.md).
 
 ### When to choose PostgreSQL
 
-Choose PostgreSQL when transactions, relational data, flexible queries, and a
-proven ecosystem matter. Reconsider a single PostgreSQL primary when the design
-requires sustained writes beyond one machine, low-latency writes in several
-continents at once, or an access pattern better served by a specialized store.
-Even then, PostgreSQL often remains the system of record while caches, search
-engines, warehouses, or streams serve specialized paths.
+Choose it when you need transactions, relationships, and flexible queries,
+which covers most applications. Look elsewhere only when you need more writes
+than one machine can handle, low-latency writes in several continents, or a
+specialized workload like full-text search at scale. Even then, Postgres often
+stays the source of truth.
 
-### Sources and further reading
+### Further reading
 
 - [PostgreSQL documentation: transaction isolation](https://www.postgresql.org/docs/current/transaction-iso.html)
 - [PostgreSQL documentation: explicit locking](https://www.postgresql.org/docs/current/explicit-locking.html)
-- [PostgreSQL documentation: transactions](https://www.postgresql.org/docs/current/tutorial-transactions.html)
 - [PostgreSQL documentation: MVCC](https://www.postgresql.org/docs/current/mvcc-intro.html)
 - [PostgreSQL documentation: write-ahead logging](https://www.postgresql.org/docs/current/wal-intro.html)
-- [PostgreSQL feature matrix](https://www.postgresql.org/about/featurematrix/)
-- [PostgreSQL documentation: table partitioning](https://www.postgresql.org/docs/current/ddl-partitioning.html)
-- [PostgreSQL documentation: log-shipping and standby servers](https://www.postgresql.org/docs/current/warm-standby.html)
-- [PostgreSQL documentation: database page layout](https://www.postgresql.org/docs/current/storage-page-layout.html)
-- [PostgreSQL documentation: using `EXPLAIN`](https://www.postgresql.org/docs/current/using-explain.html)
-- [PostgreSQL documentation: routine vacuuming](https://www.postgresql.org/docs/current/routine-vacuuming.html)

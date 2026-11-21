@@ -1,245 +1,104 @@
 ---
 title: Change Data Capture vs. Transactional Outbox
-description: How CDC and transactional outbox patterns reliably publish database changes between services.
+description: Two simple ways to reliably tell other systems that your database changed.
 ---
 
 # Change Data Capture vs. Transactional Outbox
 
-A service often needs to update its database and tell another system what
-happened. The hard part is making those two effects reliable without a
-distributed transaction.
+## The problem
 
-- **Change Data Capture (CDC)** observes committed database changes, usually
-  from a transaction log, and converts them into a change stream.
-- A **transactional outbox** writes an intentional domain event beside the
-  business data in the same database transaction. A relay publishes it later.
-
-The patterns can be combined. A common design writes an outbox row and uses CDC
-as the relay that publishes that row to a broker.
-
-## Quick comparison
-
-| | Raw CDC | Transactional outbox |
-| --- | --- | --- |
-| Captures | Row changes | Deliberate domain events |
-| First durable record | Business database change | Business change and outbox row together |
-| Application change | Often little for existing tables | Must create an event in the transaction |
-| Event contract | Coupled to storage schema unless transformed | Designed by the owning service |
-| Best fit | Replication, search, analytics, cache/view updates | Service integration and business events |
-| Main cost | Connector operations and schema coupling | Outbox table, relay, cleanup, duplicate delivery |
-
-## The dual-write problem
-
-This code contains a failure window:
+A service saves an order and then publishes an `OrderPlaced` event:
 
 ```text
-1. COMMIT order to database
-2. Publish OrderPlaced to broker
+1. Save order to database
+2. Publish OrderPlaced to the broker
 ```
 
-If the process crashes between steps 1 and 2, the order exists but no event is
-published. Reversing the steps is also unsafe: the event can be published and
-the database transaction can later fail.
+If the service crashes between the two steps, the order exists but nobody hears
+about it. Swapping the steps is no better: the event goes out, then the save
+fails. You can't put the database and the broker in one transaction, so you need
+another way to make sure the event eventually goes out.
 
-```{mermaid}
-sequenceDiagram
-  participant S as Order service
-  participant D as Database
-  participant B as Broker
-  S->>D: COMMIT order
-  D-->>S: Success
-  Note over S: Process crashes
-  S-xB: OrderPlaced never published
-```
+## Why use them
 
-Retrying the publish helps only if the service still knows that publication is
-pending. CDC and the outbox pattern each create a durable record from which
-publication can resume.
+Why not just have the order service call billing, email, and search directly?
+The outbox and CDC give you three things a direct call doesn't:
 
-## Change Data Capture
+1. **Decoupling.** The order service only records what happened. It doesn't
+   need to know who cares about a new order, and adding a consumer (say,
+   analytics) needs no change to the order service.
+2. **No lost or phantom events.** An event goes out if and only if the database
+   change committed. Other systems never miss an order, and never hear about
+   one that was rolled back.
+3. **Availability.** Saving an order only needs the database. If the broker or a
+   consumer is down, the request still succeeds and the event goes out once it
+   recovers.
 
-A transactional database records changes in a log for recovery or replication:
-PostgreSQL has WAL, MySQL has the binary log, and many managed databases expose
-an equivalent change stream. A CDC connector tracks a durable position, decodes
-committed changes, and writes change events to a stream, queue, or sink.
+## Transactional outbox
 
-```{mermaid}
-flowchart LR
-  service[Service] -->|Transaction| db[(Database)]
-  db --> log[(Transaction log)]
-  log --> connector[CDC connector]
-  connector --> stream[(Change stream)]
-  stream --> search[Search indexer]
-  stream --> warehouse[Warehouse loader]
-  stream --> cache[Cache/view updater]
-```
-
-A row-level event might resemble:
-
-```json
-{
-  "operation": "update",
-  "table": "orders",
-  "key": {"id": "order_123"},
-  "before": {"status": "paid"},
-  "after": {"status": "shipped"},
-  "position": "0/16B6C50",
-  "committedAt": "2026-09-03T18:42:00Z"
-}
-```
-
-The exact envelope and availability of `before` values, transaction metadata,
-and schema events depend on the database and connector.
-
-### Strengths
-
-- Captures every committed change in scope, including changes made by scripts or
-  older applications that do not publish events themselves.
-- Avoids adding a broker publish to the application's transaction path.
-- Works well for search indexing, analytics ingestion, audit pipelines, cache
-  invalidation, and materialized views.
-- Preserves the database log's order within the guarantees exposed by the
-  connector.
-
-### Costs and risks
-
-- Row changes describe storage mechanics, not necessarily business meaning. An
-  update to `orders.status` does not explain why it changed.
-- Consumers can become coupled to table names, columns, tombstones, and database
-  migrations. Use an owned transformation layer and versioned event contract.
-- Initial snapshots, schema changes, deletes, large transactions, and log
-  retention need explicit handling.
-- A stalled replication slot or connector can retain logs and exhaust database
-  storage. Monitor lag in both time and bytes.
-- Delivery is commonly at least once around crashes; consumers must tolerate
-  duplicates.
-
-Choose raw CDC when downstream systems genuinely need database changes or an
-existing application cannot easily emit domain events. Avoid exposing raw table
-events as a permanent public contract for many independent teams.
-
-## Transactional Outbox
-
-The service writes business state and an event record in one local transaction:
-
-```sql
-BEGIN;
-
-INSERT INTO orders (id, customer_id, status, total_cents)
-VALUES ('order_123', 'customer_42', 'placed', 12999);
-
-INSERT INTO outbox_events (
-  event_id, aggregate_type, aggregate_id, event_type, payload, created_at
-) VALUES (
-  'evt_789',
-  'order',
-  'order_123',
-  'OrderPlaced',
-  '{"orderId":"order_123","customerId":"customer_42","totalCents":12999}',
-  now()
-);
-
-COMMIT;
-```
-
-If the transaction rolls back, neither row exists. If it commits, the event is
-durably waiting even when the broker is unavailable.
+Write the event to an `outbox` table **in the same database transaction** as the
+order. A separate relay process reads the outbox and publishes each event to the
+broker.
 
 ```{mermaid}
 flowchart LR
-  service[Order service] -->|One transaction| db[(Orders + outbox)]
-  db --> relay[Outbox relay]
+  service[Order service] -->|"one transaction:<br/>order + outbox row"| db[(Database)]
+  db --> relay[Relay]
   relay --> broker[(Broker)]
   broker --> consumers[Consumers]
 ```
 
-The relay can use either approach:
-
-- **Polling publisher:** claim unpublished rows in batches, publish them, and
-  mark or delete them. It is simple and database-portable but adds polling load
-  and requires careful concurrent claiming.
-- **CDC relay:** capture inserts from the outbox table and route them to broker
-  topics. It avoids polling and an extra status update but requires CDC
-  infrastructure and log-retention operations.
-
-### Design the outbox event
-
-Include a stable `event_id`, event type, schema version, occurrence time,
-aggregate ID, and payload. Use the aggregate ID—such as `order_123`—as the broker
-partition key when per-order ordering matters. Keep the payload meaningful to
-consumers rather than mirroring every database column.
-
-Outbox events are normally append-only. Retain them until the relay has safely
-published them, then archive or delete them without allowing the table and its
-indexes to grow forever.
-
-The outbox makes **recording the intent to publish** atomic with the business
-change. It does not make broker publication exactly once. A relay can publish an
-event and crash before recording progress, so it publishes the same event again
-after restart.
-
-## The common hybrid: Outbox plus CDC
-
-```{mermaid}
-flowchart LR
-  app[Application] -->|Commit business row + domain event| db[(Database)]
-  db --> wal[(Transaction log)]
-  wal --> cdc[CDC connector]
-  cdc -->|Only outbox inserts| broker[(Broker)]
-  broker --> billing[Billing]
-  broker --> email[Email]
-  broker --> analytics[Analytics]
-```
-
-This hybrid keeps event semantics in application code while CDC handles
-reliable publication. It is often the strongest default for domain events when
-the organization already operates CDC connectors.
-
-## Delivery, ordering, and consumers
-
-Design every option around at-least-once delivery:
-
-1. Give each event a stable ID.
-2. Partition by the entity whose order matters, not by a random event ID.
-3. Make the consumer's state change and deduplication record atomic when
-   possible.
-4. Advance the consumer offset or acknowledge the message only after its local
-   work commits.
-5. Use bounded retries and a dead-letter path for poison messages.
-
-An inbox table is one way to deduplicate:
-
 ```sql
 BEGIN;
-
-INSERT INTO consumed_events (consumer_name, event_id)
-VALUES ('billing', 'evt_789')
-ON CONFLICT DO NOTHING;
-
--- Apply the billing state change only if the insert added a row.
-
+INSERT INTO orders (id, status) VALUES ('order_123', 'placed');
+INSERT INTO outbox (event_id, type, payload)
+  VALUES ('evt_789', 'OrderPlaced', '{"orderId": "order_123"}');
 COMMIT;
 ```
 
-“Exactly once” requires a precisely defined boundary. A connector or broker may
-avoid duplicates within its own transaction, while an email, external payment,
-or separate database can still happen twice after a crash.
+Either both rows are saved or neither is, so an order can never exist without
+its event. If the broker is down, the event just waits in the outbox until the
+relay can publish it.
 
-## Choosing a pattern
+## Change Data Capture (CDC)
 
-- Choose **raw CDC** for replication-like consumers, data integration, or
-  existing tables whose changes must all be observed.
-- Choose a **transactional outbox** when the service should publish a stable,
-  intentional business event.
-- Choose **outbox plus CDC** when you want domain events without operating a
-  polling publisher.
+Every database keeps a log of committed changes (PostgreSQL's WAL, MySQL's
+binlog). A CDC tool such as Debezium reads that log and turns each row change
+into an event, with no change to application code.
 
-Whichever pattern you choose, define ownership, schemas, ordering scope,
-duplicate handling, replay behavior, retention, and monitoring before treating
-the pipeline as reliable.
+```{mermaid}
+flowchart LR
+  service[Service] --> db[(Database)]
+  db --> log[(Change log)]
+  log --> cdc[CDC tool]
+  cdc --> stream[(Event stream)]
+  stream --> search[Search index]
+  stream --> warehouse[Data warehouse]
+```
+
+The catch is that CDC events describe *rows*, not *business events*. "The
+`status` column changed to `shipped`" exposes your table layout, and consumers
+break when you rename a column.
+
+## Comparison
+
+| | Transactional outbox | CDC |
+| --- | --- | --- |
+| What gets published | Business events you choose (`OrderPlaced`) | Every row change |
+| App code changes | Write an outbox row in each transaction | None |
+| Best for | Telling other services what happened | Copying data to search, analytics, or caches |
+
+They combine well: write events to an outbox table and use CDC as the relay
+that publishes them. You get clean business events without writing a relay
+that polls the table.
+
+## Consumers must handle duplicates
+
+Both patterns deliver events **at least once**. A relay can publish an event
+and crash before recording that it did, then publish it again on restart. Give
+every event a unique ID and have consumers skip IDs they've already processed.
 
 ## Further reading
 
-- [PostgreSQL: Logical decoding concepts](https://www.postgresql.org/docs/current/logicaldecoding-explanation.html)
 - [Debezium: Outbox Event Router](https://debezium.io/documentation/reference/stable/transformations/outbox-event-router.html)
 - [AWS Prescriptive Guidance: Transactional outbox pattern](https://docs.aws.amazon.com/prescriptive-guidance/latest/cloud-design-patterns/transactional-outbox.html)

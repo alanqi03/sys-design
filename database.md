@@ -4,111 +4,95 @@ title: Databases
 
 # Databases
 
-A database makes state durable and queryable. Selecting one begins with access
-patterns and correctness requirements, not with a product name.
+A database stores your data durably and lets you query it. Pick one by asking
+what queries you need and which rules must never break, not by brand name.
 
-This section starts with general database design principles, compares
-[Change Data Capture and transactional outbox patterns](./database/change-data-capture-outbox.md),
-explains how to [shard a database](./database/sharding.md),
-then applies the principles to systems such as
-[PostgreSQL](./database/postgresql.md).
-
-[Redis](./caching/redis.md) can persist data and act as an in-memory database,
-but this book places it under Caching because its most common system-design role
-is accelerating or coordinating access around another source of truth. Its
-chapter also covers the cases where Redis owns durable state.
+This section covers general principles, then
+[CDC and the transactional outbox](./database/change-data-capture-outbox.md),
+[sharding](./database/sharding.md), and four databases.
+[Redis](./caching/redis.md) can also be a database, but it lives under Caching
+because that is its most common role.
 
 ## Database comparison
 
-| Database and type | Pros | Cons | When to choose it |
+| Database | Best at | Weak at | Example use |
 | --- | --- | --- | --- |
-| [PostgreSQL](./database/postgresql.md) — relational | ACID transactions, joins, constraints, flexible SQL, mature tooling | A single primary can bottleneck writes; multi-region active-active writes and sharding take extra work | Default choice for orders, accounts, inventory, and other business data with relationships or correctness-sensitive transactions. |
-| [DynamoDB](./database/dynamodb.md) — managed key-value/document | Predictable key-based access at scale; AWS handles partitioning, replication, and operations | Queries must follow planned keys or indexes; hot keys, scans, and extra indexes can be costly | Choose when access patterns are known, traffic can be distributed across keys, and you want a fully managed low-latency store. |
-| [Cassandra](./database/cassandra.md) — distributed wide-column | High write throughput, horizontal scale, no single primary, multi-datacenter availability | Query-specific tables and denormalization; compaction, repairs, and oversized partitions require operational care | Choose for very large, write-heavy workloads across nodes or regions when queries are predictable and availability matters more than joins or general multi-row transactions. |
-| [Elasticsearch](./database/elasticsearch.md) — search/analytics index | Full-text relevance, filtering, aggregations, and geospatial or vector search | Expensive indexing and reindexing; search visibility can lag writes; no general multi-document transactions | Add it for search or analytics that the primary database cannot serve well, usually as a derived index rather than the system of record. |
+| [PostgreSQL](./database/postgresql.md) (relational) | Transactions, joins, constraints, flexible SQL | Scaling writes past one primary | Orders, accounts, inventory |
+| [DynamoDB](./database/dynamodb.md) (managed key-value) | Fast key lookups at any scale, no servers to run | Queries you didn't plan for; hot keys | Shopping carts, sessions |
+| [Cassandra](./database/cassandra.md) (wide-column) | Huge write volume across nodes and regions | Joins, ad hoc queries, operations work | Chat messages, IoT sensor data |
+| [Elasticsearch](./database/elasticsearch.md) (search index) | Full-text search, filters, aggregations | Being the source of truth | Product search, log search |
 
-These are different tools, not four interchangeable defaults. Start with the
-required queries and invariants; add a specialized store only when a concrete
-workload justifies its modeling and operational costs.
+Start with PostgreSQL. Add another store only when a specific workload needs it.
 
 ## Model the workload
 
-Write down the principal entities, expected data volume, read/write ratio, and
-critical queries. For each operation, ask:
+Before choosing, write down the main queries and how often they run.
 
-- Does it require a transaction across multiple records?
-- How fresh must reads be?
-- What latency and throughput are expected?
-- Which fields are queried together?
-- Can old data be archived or deleted?
+**Example:** a food delivery app.
 
-A relational database is a strong default when relationships, constraints, and
-transactions matter. Document, key-value, wide-column, graph, and time-series
-databases specialize in different access patterns or scaling models.
+| Operation | Frequency | Needs |
+| --- | --- | --- |
+| Place an order (charge card, reserve items) | 100/s | A transaction across several rows |
+| Show a restaurant's menu | 10,000/s | Fast reads; a few seconds stale is fine |
+| Search "spicy noodles near me" | 2,000/s | Full-text and location search |
+
+Orders need transactions, so they go in PostgreSQL. Menus are read-heavy, so add
+a cache. Search needs Elasticsearch, fed from PostgreSQL.
 
 ## Indexes
 
-An index is an auxiliary structure that makes selected reads faster. The cost is
-additional storage and work on every write. Composite indexes depend on column
-order and should follow actual filter, join, and sort patterns.
+An index is a sorted lookup structure that makes some reads fast, at the cost of
+extra storage and slower writes.
 
-Measure query plans rather than assuming an index is used. Too many indexes can
-turn a read optimization into a write bottleneck.
+```sql
+-- Without an index, this scans every order.
+SELECT * FROM orders WHERE customer_id = 42 ORDER BY created_at DESC;
 
-## Transactions and isolation
+-- This index matches the filter, then the sort.
+CREATE INDEX ON orders (customer_id, created_at);
+```
 
-A transaction groups operations into one logical unit. ACID describes common
-goals: atomicity, consistency, isolation, and durability. Isolation levels trade
-coordination cost for protection against anomalies such as dirty reads,
-non-repeatable reads, and write skew.
+Column order matters: this index helps queries filtering by `customer_id`, but
+not queries filtering only by `created_at`. Check with `EXPLAIN` that the index
+is actually used.
 
-Keep transactions short. Holding locks while making remote calls increases
-contention and makes failure recovery ambiguous. When a workflow crosses service
-boundaries, patterns such as an outbox, saga, or compensating action are often
-more practical than a distributed transaction. The
-[CDC and Outbox](./database/change-data-capture-outbox.md) chapter explains how
-to publish a committed change without an unsafe dual write.
+## Transactions
+
+A transaction makes several changes all-or-nothing. Moving $50 from Alice to
+Bob debits one account and credits the other; a transaction ensures you never
+see only half.
+
+Keep transactions short, and never make network calls while one is open. To
+notify other services after a commit, use the
+[transactional outbox](./database/change-data-capture-outbox.md).
 
 ## Replication
 
-Replication copies data to multiple nodes for availability, read capacity, or
-geographic proximity. A common leader-based design sends writes to one leader
-and replicates changes to followers.
+Replication keeps copies of the data on several machines. Usually one
+**leader** takes writes and **followers** copy them and serve reads.
 
-Synchronous replication can provide stronger durability but adds write latency.
-Asynchronous replication is faster, but a newly committed write may be missing
-from a follower and can be lost during failover. Applications must decide
-whether stale reads are acceptable and whether read-after-write consistency is
-required.
+Copying is usually asynchronous, so a follower can lag. **Example:** a user
+updates their profile photo, the next page load reads from a lagging follower,
+and the old photo appears. Fix it by reading the user's own data from the leader
+right after they write it.
 
-## Partitioning
+## Partitioning (sharding)
 
-Partitioning, or sharding, divides a data set across nodes. A good partition key
-spreads both storage and traffic while supporting common queries. A poor key can
-create a hot partition even when total capacity is ample.
+Sharding splits data across machines by a key, such as `user_id`, so no single
+machine holds everything or takes every write. A bad key creates a hot spot: one
+machine gets most of the traffic. See [Sharding](./database/sharding.md).
 
-Range partitioning supports scans but can concentrate sequential writes. Hash
-partitioning distributes load more evenly but makes range queries harder.
-Rebalancing, cross-partition queries, and globally unique identifiers add
-operational complexity. The [Sharding](./database/sharding.md) chapter walks
-through the design decisions and failure modes in detail.
+## Consistency vs. availability (CAP)
 
-## Availability and consistency
+If the network splits a distributed database, each side must either reject
+requests (stay consistent) or answer with possibly stale data (stay available).
 
-During a network partition, a distributed data store cannot guarantee both that
-every request receives a successful response and that every response observes a
-single, immediately consistent value. This is the practical lesson of CAP.
-Outside partitions, systems still make latency-versus-consistency trade-offs.
-
-Use the weakest consistency model that preserves product correctness—but define
-that correctness with concrete invariants. A social feed can often tolerate
-staleness; a balance transfer cannot tolerate creating money.
+Choose per feature. A like count can be a little stale. A bank balance can't.
 
 ## Design checklist
 
-- What are the access patterns and invariants?
-- Which operations require transactions?
-- What is the source of truth?
-- How are replicas promoted and repaired?
-- What happens during replication lag or a split network?
-- How are schema changes, backups, and restores tested?
+- What are the main queries, and which rules must never break?
+- Which operations need transactions?
+- Which database is the source of truth?
+- What happens when a replica lags or a machine fails?
+- How are backups restored and schema changes rolled out?
