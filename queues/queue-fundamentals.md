@@ -5,211 +5,149 @@ description: Worker queues, acknowledgements, retries, dead-letter queues, idemp
 
 # Queue Fundamentals
 
-## The basic model
-
-A producer submits a task, the queue stores it, and one worker claims it. The
-task is not necessarily deleted when delivered: reliable queues keep it in an
-**in-flight** state until the worker acknowledges success.
+**Running example:** a photo app. When a user uploads a photo, the API saves it
+and puts a job on a queue. Workers pick up jobs and create thumbnails, so the
+upload request returns right away.
 
 ```json
 {
   "job_id": "job_987",
   "type": "GenerateThumbnails",
   "image_uri": "s3://uploads/photo-123.jpg",
-  "sizes": [64, 256, 1024],
-  "attempt": 1
+  "sizes": [64, 256, 1024]
 }
 ```
 
+## The job lifecycle
+
+A worker taking a job doesn't delete it. The job stays **in flight** until the
+worker confirms success.
+
 ```{mermaid}
 stateDiagram-v2
-  [*] --> Ready: producer enqueues
-  Ready --> InFlight: worker receives
-  InFlight --> Complete: ACK
-  InFlight --> Ready: NACK or lease expires
-  InFlight --> DLQ: maximum attempts reached
-  Complete --> [*]
-  DLQ --> [*]: inspect or redrive
+  [*] --> Ready: API enqueues
+  Ready --> InFlight: worker takes it
+  InFlight --> Done: worker ACKs
+  InFlight --> Ready: worker fails or crashes
+  InFlight --> DLQ: too many attempts
+  Done --> [*]
+  DLQ --> [*]: inspect and fix
 ```
 
-The lifecycle is usually:
+1. A worker takes the job. The queue hides it from other workers.
+2. **Success:** the worker sends an **ACK** and the job is removed.
+3. **Failure or crash:** the job becomes ready again, and another worker can
+   retry it.
+4. **Too many failures:** the job moves to a **dead-letter queue (DLQ)** for a
+   human to look at.
 
-1. The worker receives the task; the queue marks it in flight or invisible.
-2. Processing succeeds; the worker sends an **ACK**, and the queue removes or
-   completes the task.
-3. Processing fails; the worker sends a **NACK**, or its lease expires after a
-   crash. The queue makes the task ready again and records another attempt.
-4. The maximum attempt count is reached; the queue moves the task to a
-   **dead-letter queue (DLQ)**.
+Queues detect a crashed worker in one of two ways:
 
-Workers usually use queue-protocol acknowledgements, not HTTP `2XX` and `5XX`.
-HTTP status codes apply only when a service delivers messages to an HTTP
-endpoint.
+- **Visibility timeout** (SQS): the job is hidden for, say, 5 minutes. If the
+  worker hasn't deleted it by then, it reappears.
+- **Connection-based ACK** (RabbitMQ): if the worker's connection drops before
+  it ACKs, the job goes back on the queue.
 
-## Good queue use cases
+Set the timeout longer than a normal job takes. Too short, and two workers
+process the same photo at once. Too long, and a crashed job sits stuck.
 
-- **Media processing:** resize images, transcode video, or scan uploads.
-- **Notifications:** send email, SMS, or push notifications outside the request
-  path.
-- **Webhook delivery:** retry temporary failures with backoff.
-- **Document generation:** create invoices, reports, and exports.
-- **Scheduled work:** delay a task until a future time.
-- **Rate-controlled integration:** protect a slow third-party API from bursts.
+## When to use a queue
 
-Do not put work on a queue merely to hide an overloaded dependency. If work
-arrives faster than it can permanently be processed, queue depth will continue
-growing.
+- Image and video processing
+- Sending emails, SMS, and push notifications
+- Delivering webhooks with retries
+- Generating reports and PDFs
+- Smoothing bursts before a slow third-party API
 
-## ACK, NACK, and visibility
-
-Different brokers use different terms, but two common models are:
-
-- **Visibility lease:** receiving a message hides it for a fixed time. Success
-  explicitly deletes it; otherwise it becomes visible again. Amazon SQS uses
-  this model.
-- **Acknowledgement:** the broker pushes or delivers a message and waits for an
-  ACK. A NACK, rejected delivery, closed connection, or timeout can requeue it.
-  RabbitMQ uses this model.
-
-Set the lease or acknowledgement timeout above normal processing time, and let
-long-running workers extend it with heartbeats. A timeout that is too short
-causes concurrent duplicate work; one that is too long delays recovery after a
-crash.
+A queue absorbs **bursts**. If jobs arrive faster than workers can *ever* finish
+them, the queue just grows forever. Add workers instead.
 
 ## Retries and backoff
 
-Retry transient failures such as timeouts or rate limits. Permanent failures,
-such as an invalid file format, should go directly to the DLQ.
+Retry temporary failures (timeouts, rate limits). Send permanent failures (a
+corrupt image file) straight to the DLQ, because retrying won't help.
 
-A simple exponential schedule is:
+Wait longer between each attempt, plus a little randomness (jitter) so failed
+jobs don't all retry at the same instant:
 
 ```text
-delay = min(base_delay × 2^(attempt - 1), maximum_delay) + jitter
-
-attempt 1: immediate
-attempt 2: about 5 seconds later
-attempt 3: about 10 seconds later
-attempt 4: about 20 seconds later
+attempt 1: immediately
+attempt 2: ~5 s later
+attempt 3: ~10 s later
+attempt 4: ~20 s later → then DLQ
 ```
-
-Jitter prevents thousands of failed tasks from retrying simultaneously. Define
-the limit as **maximum attempts**, including the first delivery; “three retries”
-can ambiguously mean four executions.
 
 ## Dead-letter queues
 
-A DLQ isolates tasks that cannot complete. It prevents one poison message from
-circulating forever, but it is not a trash can.
-
-Store or retain:
-
-- the original message and stable `job_id`;
-- attempt count and timestamps;
-- the last error category and diagnostic context; and
-- the source queue and application version.
-
-Alert on DLQ growth. Operators need a process to inspect, repair, replay, or
-discard messages safely. Replaying without fixing the cause only creates another
-failure loop.
+A DLQ catches jobs that keep failing, so one bad job doesn't retry forever.
+Alert when the DLQ grows, find and fix the cause, then replay the jobs. Replaying
+without a fix just fails again.
 
 ## Idempotent workers
 
-At-least-once queues can redeliver a task. A worker may finish its side effect,
-crash before ACK, and then receive the same task again. An **idempotent worker**
-makes repeated processing produce the same correct result as processing once.
+Queues deliver jobs **at least once**. A worker can finish the thumbnails, crash
+before sending the ACK, and the job runs again. So processing a job twice must
+give the same result as processing it once.
 
-For a payment job, pass its stable `job_id` to the payment provider as an
-idempotency key. For an internal database operation, record completion under a
-unique constraint:
+Easy ways to get there:
 
-```sql
-BEGIN;
+- **Write to a fixed location:** save to `thumbs/photo-123-256.jpg`, not a random
+  file name. A second run just overwrites the same file.
+- **Set, don't increment:** `status = 'shipped'` is safe to repeat;
+  `count = count + 1` is not.
+- **Record finished jobs** in the same transaction as the work:
 
-INSERT INTO processed_jobs (job_id)
-VALUES ('charge_order_123')
-ON CONFLICT DO NOTHING;
+  ```sql
+  BEGIN;
+  INSERT INTO processed_jobs (job_id) VALUES ('job_987')
+    ON CONFLICT DO NOTHING;   -- 0 rows inserted = already done, so skip
+  -- ...do the work only if the insert succeeded...
+  COMMIT;
+  ```
 
--- Perform the protected state change only when the insert succeeded.
-COMMIT;
-```
+- **Pass an idempotency key** to external APIs: payment providers won't charge
+  twice for the same key.
 
-The completion marker and business change should share a transaction when
-possible. A separate “check then act” can race with another worker.
+## Ordering and priority
 
-Examples of naturally or deliberately idempotent effects:
-
-- set `order_123.status = 'shipped'` rather than blindly incrementing a state;
-- write an invoice to `invoices/order_123.pdf` rather than a random filename;
-- upsert a search document using `product_456` as its ID; and
-- send `welcome_email:user_42` only if its unique delivery record is absent.
-
-## Ordering, priority, and delayed work
-
-Global ordering limits parallelism because only one worker can safely advance
-the entire queue. Prefer ordering within a smaller group such as `account_id` or
-`order_id`. Even then, retries can block later work for that group.
-
-Priority queues can starve low-priority jobs. Use a small number of priority
-classes, separate queues with reserved worker capacity, or aging that raises a
-job's priority over time.
-
-Delayed delivery is useful for scheduled work and retry backoff. It should not
-replace a workflow engine when a process lasts days, includes many dependent
-steps, or requires human approval.
+- **Ordering:** strict order across the whole queue means only one worker can
+  run at a time. Usually you only need order per user or per order, which still
+  lets different users' jobs run in parallel.
+- **Priority:** low-priority jobs can starve. Use a separate queue with its own
+  workers for urgent jobs.
+- **Delays:** "run this in 10 minutes" is fine. For multi-day processes with many
+  steps, use a workflow engine instead.
 
 ## Scaling workers
 
-```{mermaid}
-flowchart LR
-  api[Upload API] --> original[(Object storage)]
-  api --> jobs[[Image jobs queue]]
-  jobs --> w1[Worker 1]
-  jobs --> w2[Worker 2]
-  jobs --> w3[Worker 3]
-  w1 --> output[(Thumbnails)]
-  w2 --> output
-  w3 --> output
-```
+Scale on **queue depth and the age of the oldest job**, not on CPU. 10,000
+waiting jobs is nothing if each takes 10 ms, and a crisis if each takes 10
+minutes.
 
-Scale workers from queue age and depth, not CPU alone. A backlog of 100,000 jobs
-means something different when jobs take 10 milliseconds versus 10 minutes.
+Also watch retry and DLQ rates, and whether the downstream service is
+overloaded. When shutting a worker down, stop taking new jobs and finish (or
+release) the ones it holds.
 
-Watch:
+## Queue vs. stream
 
-- age of the oldest ready message;
-- ready and in-flight message counts;
-- processing latency and throughput;
-- retry, timeout, and DLQ rates; and
-- downstream saturation.
-
-Use prefetch or concurrency limits so one worker does not claim more work than
-it can finish. Graceful shutdown should stop new claims, finish or release
-in-flight work, and then close the queue connection.
-
-## Queue versus stream
-
-| Question | Queue | Stream |
+| | Queue | Stream |
 | --- | --- | --- |
-| Message meaning | Task to perform | Fact that happened |
-| Normal recipient | One worker | One member of every consumer group |
-| After success | Removed or completed | Retained until the retention policy expires |
-| Progress | Ready/in-flight/complete | Offset per consumer group |
-| Example | `GenerateInvoicePDF` | `OrderPlaced` |
+| A message is | A task to do | A fact that happened |
+| Read by | One worker | Every interested consumer group |
+| After processing | Deleted | Kept until retention expires |
+| Example | `GenerateThumbnails` | `OrderPlaced` |
 
-See [Streaming Fundamentals](../streaming/streaming-fundamentals.md) for ordered
-logs, partitions, offsets, replay, and event-time processing.
+See [Streaming Fundamentals](../streaming/streaming-fundamentals.md).
 
-## Design checklist
+## Checklist
 
-- What makes a job unique, and how will duplicate processing be made safe?
-- Is the failure transient, permanent, or unknown?
-- What are the visibility timeout, backoff schedule, and maximum attempts?
-- What ordering or priority is truly required?
-- How will queue depth and oldest-message age drive autoscaling?
-- Who monitors, repairs, and replays the DLQ?
+- Is it safe if a job runs twice?
+- What's the timeout, retry schedule, and maximum number of attempts?
+- Which failures are permanent and should skip retries?
+- Do you need ordering, and only per user or across everything?
+- What drives autoscaling, and who watches the DLQ?
 
-## Sources and further reading
+## Further reading
 
 - [Amazon SQS visibility timeout](https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-visibility-timeout.html)
 - [RabbitMQ consumer acknowledgements](https://www.rabbitmq.com/docs/4.1/confirms)
-- [RabbitMQ consumers and prefetch](https://www.rabbitmq.com/docs/4.1/consumers)

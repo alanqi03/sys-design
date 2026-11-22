@@ -5,119 +5,103 @@ description: A concise system-design guide to RabbitMQ exchanges, queues, routin
 
 # RabbitMQ
 
-RabbitMQ is a message broker. Producers publish to an **exchange**, bindings
-route each message to one or more **queues**, and consumers receive from those
-queues. This routing layer is the main conceptual difference from simpler queue
-services.
+RabbitMQ is a message broker you run yourself (or rent as a managed service).
+Its main difference from SQS is **routing**: producers publish to an
+**exchange**, and the exchange decides which queues get a copy.
+
+## Example: routing order events
+
+The order service publishes a message with routing key `order.paid`. It doesn't
+know which queues exist:
 
 ```{mermaid}
 flowchart LR
-  producer[Order service] --> exchange{orders exchange}
-  exchange -->|order.paid| fulfillment[[Fulfillment queue]]
-  exchange -->|order.*| analytics[[Analytics queue]]
-  fulfillment --> worker1[Fulfillment worker]
-  analytics --> worker2[Analytics worker]
+  producer[Order service] -->|"order.paid"| exchange{orders exchange}
+  exchange -->|"binding: order.paid"| fulfillment[[Fulfillment queue]]
+  exchange -->|"binding: order.*"| analytics[[Analytics queue]]
+  fulfillment --> w1[Fulfillment workers]
+  analytics --> w2[Analytics workers]
 ```
 
-Each queue receives its own copy when bindings match. Workers on the same queue
-compete for its messages.
+- The fulfillment queue only wants paid orders, so it binds to `order.paid`.
+- The analytics queue wants every order event, so it binds to `order.*`.
+- Both get their own copy. Workers on the same queue share its messages.
 
-## Exchanges and routing
+Adding a new consumer just means binding a new queue. The producer doesn't
+change.
 
-- **Direct:** route when the binding key exactly matches the routing key.
-- **Topic:** route with patterns such as `order.*` or `order.#`.
-- **Fanout:** copy every message to every bound queue.
-- **Headers:** route from message-header matches instead of a routing key.
+## Exchange types
 
-For example, publish an event with routing key `order.paid`. A fulfillment queue
-can bind exactly to `order.paid`, while an analytics queue binds to `order.#`.
-The publisher does not need to know either queue name.
+| Type | Routes when | Example |
+| --- | --- | --- |
+| Direct | The routing key matches exactly | `order.paid` → payments queue |
+| Topic | The key matches a pattern (`*` = one word, `#` = any) | `order.*` → analytics queue |
+| Fanout | Always; copies to every bound queue | Broadcast cache invalidations |
+| Headers | Message headers match | Route by `region=eu` |
 
-## Delivery lifecycle
+## Acknowledgements
 
-With manual acknowledgements, RabbitMQ keeps a delivery unacknowledged until the
-consumer responds:
+RabbitMQ pushes messages to workers and waits for a reply:
 
-```text
-basic.ack     -> processed successfully; discard from the queue
-basic.nack    -> failed; requeue or discard/dead-letter
-basic.reject  -> reject one delivery; requeue or discard/dead-letter
-```
+- `ack`: done; remove the message.
+- `nack` / `reject`: failed; requeue it or send it to a dead-letter queue.
 
-If the channel or connection closes before ACK, RabbitMQ automatically requeues
-the unacknowledged delivery. The `redelivered` flag tells the consumer that the
-message may have been seen before, but workers must still be idempotent.
+If the worker's connection drops before it replies, RabbitMQ requeues the
+message automatically. That means messages can arrive twice, so workers must be
+idempotent.
 
-## Prefetch and worker load
+**Prefetch** limits how many unacknowledged messages one worker holds at once.
+A worker that runs 4 jobs in parallel might use a prefetch of 4–8.
 
-Prefetch limits how many unacknowledged deliveries RabbitMQ sends to a consumer.
-A prefetch of `1` gives fair distribution for slow jobs but can underuse workers
-when network latency is significant. A larger value improves throughput but
-increases per-worker buffering and the amount of work that must be requeued
-after a crash.
+## Retries with a delay
 
-Start near each worker's real concurrency. A process with four job slots might
-prefetch four to eight tasks, then tune from processing time and memory use.
-
-## Queue types and durability
-
-- **Quorum queues** replicate data using a consensus protocol and are the usual
-  choice when queue availability and data safety matter.
-- **Classic queues** are non-replicated in modern RabbitMQ and suit cases where
-  the queue can be rebuilt or node-local behavior is intentional.
-
-Durability requires agreement across several settings: declare durable queues
-and exchanges, publish persistent messages, and use publisher confirms so the
-producer knows RabbitMQ accepted responsibility. Consumer ACKs solve a separate
-problem: they confirm processing after delivery.
-
-## Retries and dead lettering
-
-Immediate `nack(requeue=true)` can create a tight failure loop. A common design
-dead-letters failures to a retry queue with a TTL; expiration routes them back to
-the work exchange after a delay. After the maximum attempt count, route them to
-a terminal DLQ.
+Requeueing a failed message immediately can create a tight failure loop. A
+common pattern sends it to a retry queue with a TTL, which routes it back after
+the delay:
 
 ```{mermaid}
 flowchart LR
   work[[Work queue]] --> worker[Worker]
-  worker -->|ACK| done[Complete]
-  worker -->|temporary failure| retry[[Retry queue + TTL]]
-  retry -->|delay expires| work
-  worker -->|permanent or max attempts| dlq[[Dead-letter queue]]
+  worker -->|ack| done[Done]
+  worker -->|temporary failure| retry[[Retry queue, 30 s TTL]]
+  retry -->|TTL expires| work
+  worker -->|too many attempts| dlq[[Dead-letter queue]]
 ```
 
-Track attempts in a trusted header or dead-letter metadata, and guard against
-cycles that route a poison message forever.
+## Durability
 
-## Pros
+To survive a broker restart, you need all of:
 
-- Flexible exchange and binding model for direct, topic, and fanout routing.
-- Push consumers, acknowledgements, prefetch, priorities, TTLs, and dead-letter
-  exchanges support sophisticated job delivery.
-- Mature AMQP clients and deployment options across clouds and data centers.
-- Quorum queues provide replicated, strongly coordinated queue storage.
+- **Quorum queues**, which replicate messages across nodes (the modern default
+  for important data);
+- **persistent** messages; and
+- **publisher confirms**, so the producer knows RabbitMQ actually stored the
+  message.
 
-## Cons
+## Pros and cons
 
-- More concepts and operational work than a managed queue such as SQS.
-- Routing, durability, and retry policies can be misconfigured in combinations.
-- A single queue has finite throughput; scale-out may require partitioning work
-  across multiple queues.
-- Requeueing and concurrent consumers weaken any assumption of strict
-  end-to-end processing order.
+**Pros**
+
+- Flexible routing: direct, topic, fanout, and headers.
+- Push delivery, prefetch, priorities, TTLs, and dead-lettering built in.
+- Runs anywhere: any cloud or your own datacenter.
+
+**Cons**
+
+- More to run and configure than SQS.
+- Easy to misconfigure durability or retries.
+- One queue has a throughput limit; scaling out may mean splitting the work
+  across queues.
 
 ## When to choose RabbitMQ
 
-Choose RabbitMQ when applications need rich broker-side routing, AMQP clients,
-push delivery, controlled prefetch, or portability across environments. Choose
-SQS when minimizing broker operations inside AWS matters more. Choose Kafka or
-another stream when retained history and independent replay are core needs.
+Choose it when you need routing rules, push delivery, or a broker that runs
+anywhere. Choose SQS to avoid running a broker on AWS. Choose Kafka when
+consumers need to replay history.
 
-## Sources and further reading
+## Further reading
 
-- [RabbitMQ consumers](https://www.rabbitmq.com/docs/4.1/consumers)
+- [RabbitMQ exchanges](https://www.rabbitmq.com/docs/4.1/exchanges)
 - [Consumer acknowledgements and publisher confirms](https://www.rabbitmq.com/docs/4.1/confirms)
-- [RabbitMQ queues](https://www.rabbitmq.com/docs/4.1/queues)
-- [RabbitMQ dead-letter exchanges](https://www.rabbitmq.com/docs/4.1/dlx)
 - [RabbitMQ quorum queues](https://www.rabbitmq.com/docs/4.1/quorum-queues)
+- [RabbitMQ dead-letter exchanges](https://www.rabbitmq.com/docs/4.1/dlx)

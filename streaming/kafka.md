@@ -5,175 +5,120 @@ description: A system-design guide to Kafka topics, partitions, replication, off
 
 # Apache Kafka
 
-Apache Kafka is a distributed event-log platform. Producers append records to
-partitioned topics, brokers retain those records, and consumer groups read them
-at their own pace using offsets.
+Apache Kafka is a distributed event log. Producers append events to **topics**,
+Kafka keeps them for a set time, and each consumer group reads at its own pace.
+
+## Example
+
+The checkout service writes to the `orders` topic, which has 3 partitions. The
+record's key is the order ID:
+
+```json
+{ "key": "order_123",
+  "value": { "event_id": "evt_01J8", "type": "OrderPlaced", "total_cents": 12999 } }
+```
 
 ```{mermaid}
 flowchart LR
-  producer[Order producer] --> topic[(orders topic)]
-  topic --> p0[Partition 0 leader]
-  topic --> p1[Partition 1 leader]
-  topic --> p2[Partition 2 leader]
-  p0 --> replicas0[Followers]
-  p1 --> replicas1[Followers]
-  p2 --> replicas2[Followers]
-  p0 --> operations[Operations group]
-  p1 --> operations
-  p2 --> operations
-  p0 --> analytics[Analytics group]
-  p1 --> analytics
-  p2 --> analytics
+  producer[Checkout] --> p0[(Partition 0)]
+  producer --> p1[(Partition 1)]
+  producer --> p2[(Partition 2)]
+  p0 --> b1[Billing consumer 1]
+  p1 --> b1
+  p2 --> b2[Billing consumer 2]
+  p0 & p1 & p2 --> a1[Analytics consumer]
 ```
 
-Every consumer group receives the topic independently. Within a group, each
-partition is assigned to one consumer at a time, so consumers share the work.
+- Kafka hashes `order_123` to pick a partition. Every later event for that order
+  lands in the same partition, in order.
+- The **billing** group has 2 consumers, so they split the 3 partitions.
+- The **analytics** group gets its own full copy of every event.
+
+Each consumer tracks an **offset** per partition:
+
+```text
+Partition 0: 100  101  102  103
+                        ^ billing's next read
+```
 
 ## Developer choices
 
-- **Topic boundaries:** group events with compatible ownership, retention,
-  security, and scaling needs—not one topic per event type by reflex.
-- **Record key:** related records with the same key go to the same partition and
-  preserve their local order. For orders, `order_id` or `customer_id` may be
-  appropriate depending on the invariant.
-- **Partition count:** more partitions increase parallelism and broker work but
-  are not free; increasing them can change key-to-partition placement.
-- **Replication and acknowledgement:** choose replication factor,
-  `min.insync.replicas`, and producer acknowledgements together.
-- **Retention:** time or size-based retention keeps history; compaction keeps the
-  latest record per key. Some topics need both.
-- **Consumer commits:** decide when offsets commit and how repeated processing is
-  made safe.
+- **Key:** decides ordering. Events with the same key stay in order.
+- **Partition count:** the maximum parallelism for a consumer group. Adding
+  partitions later changes which partition a key maps to.
+- **Replication:** usually 3 copies, with `acks=all` and
+  `min.insync.replicas=2` so a write survives losing a broker.
+- **Retention:** keep events for a set time or size (e.g. 7 days), or use
+  **compaction** to keep only the latest event per key.
+- **When to commit offsets:** usually after processing, with idempotent
+  consumers.
 
-## Example record
+## Writes and reads
 
-A producer sends a record to topic `orders.events` with key `order_123`:
+**Write:** the producer batches records and sends them to the partition's
+**leader** broker. The leader appends them to its log, followers copy them, and
+the producer gets an acknowledgement.
 
-```json
-{
-  "key": "order_123",
-  "value": {
-    "event_id": "evt_01J8Z9Q4T2",
-    "type": "OrderPlaced",
-    "order_id": "order_123",
-    "total_cents": 12999
-  }
-}
-```
+**Read:** consumers fetch batches from their current offset and periodically
+commit it. If consumers join or leave, Kafka **rebalances**, reassigning
+partitions among the remaining consumers.
 
-Kafka hashes the key to select a partition. All later records using
-`order_123` reach that partition and are appended in order.
+## Delivery guarantees
 
-## What happens on a write
-
-1. The producer serializes the key and value and selects a partition.
-2. It batches records and sends them to that partition's leader broker.
-3. The leader appends the batch to its log and followers replicate it.
-4. The producer receives success according to its acknowledgement settings.
-
-Batching, compression, and a small linger interval can greatly improve
-throughput at the cost of a little latency. An idempotent producer protects
-against duplicates caused by producer retries within Kafka's supported path.
-
-## What happens on a read
-
-1. Consumers with the same `group.id` join a consumer group.
-2. Kafka assigns each topic partition to one group member.
-3. Consumers fetch sequential batches beginning at their current offsets.
-4. The group commits offsets so a restarted member knows where to resume.
-
-```text
-Partition 0: offset 100  101  102  103
-Consumer A:                     ^ next read
-
-Partition 1: offset 205  206  207
-Consumer B:                ^ next read
-```
-
-A group cannot use more active consumers than assigned partitions. Membership
-changes trigger rebalancing; cooperative assignment can reduce how much work
-stops and moves.
-
-## Delivery and processing semantics
-
-- Commit before processing for at-most-once behavior.
-- Process then commit for at-least-once behavior; duplicates are possible.
-- Kafka transactions can atomically consume, produce, and commit offsets inside
-  a Kafka-to-Kafka pipeline when configured correctly.
-
-An external database or HTTP API is outside that Kafka transaction. Use an
-idempotency key, conditional update, or transactional outbox/inbox pattern for
-end-to-end correctness.
-
-## Replication and durability
-
-Each partition has a leader and follower replicas on other brokers. Producers
-and consumers normally use the leader. If it fails, an in-sync follower can be
-elected.
-
-A common durable policy requires acknowledgements from all in-sync replicas and
-sets a minimum number that must remain in sync. This reduces the chance of loss
-but makes writes unavailable when too few replicas are healthy. Retention is not
-a backup: operator mistakes or application-level deletion can propagate across
-replicas.
+- Commit, then process → **at most once** (may skip events).
+- Process, then commit → **at least once** (may repeat events). The usual
+  choice.
+- **Kafka transactions** give exactly-once for Kafka-to-Kafka pipelines only.
+  Writes to a database or external API still need idempotency.
 
 ## Retention and compaction
 
-Time or size retention deletes old log segments regardless of whether consumers
-have read them. A consumer whose lag exceeds retention cannot resume from the
-missing offsets.
+Normal retention deletes old events after the time or size limit, whether or not
+everyone has read them. A consumer that falls further behind than the retention
+period loses events.
 
-Log compaction retains the latest value for each key:
+Compaction keeps only the latest value per key, which is handy for rebuilding a
+table:
 
 ```text
-user_42 -> plan=free
-user_7  -> plan=pro
-user_42 -> plan=pro    # latest value retained after compaction
+user_42 → plan=free
+user_7  → plan=pro
+user_42 → plan=pro     ← only this one is kept for user_42
 ```
-
-Compacted topics are useful for rebuilding keyed tables or distributing
-configuration. Tombstone records represent deletion.
 
 ## Scaling
 
-- Add consumers to a group up to the number of partitions.
-- Add partitions when more parallelism is required, after checking key-ordering
-  and repartitioning consequences.
-- Add brokers and rebalance partition replicas to spread storage and traffic.
-- Batch and compress records to use network and disk sequentially.
-- Isolate hot keys or redesign the key when one partition dominates.
+- Add consumers, up to the number of partitions.
+- Add partitions for more parallelism. Note that keys will move.
+- Add brokers to spread storage and traffic.
+- Batch and compress records.
+- Watch consumer lag, partition skew, and under-replicated partitions.
 
-Measure produce/fetch latency, bytes per second, partition skew, under-replicated
-partitions, consumer lag, rebalance frequency, request saturation, and disk
-capacity relative to retention.
+## Pros and cons
 
-## Pros
+**Pros**
 
-- Durable replay lets new consumers and repaired views process old events.
-- Partitions provide horizontal throughput and ordering within a key scope.
-- Consumer groups support many independent applications over the same history.
-- Mature connectors and processing integrations form a broad ecosystem.
+- Events are kept, so new consumers can replay history.
+- Scales to millions of events per second through partitions.
+- Many independent consumer groups can read the same data.
+- A large ecosystem of connectors (CDC, databases, warehouses).
 
-## Cons
+**Cons**
 
-- Partitioning, replication, upgrades, security, and capacity planning require
-  operational expertise.
-- Global ordering conflicts with horizontal parallelism.
-- Rebalances, hot partitions, and lag can create large tail delays.
-- Kafka is not ideal for arbitrary per-message priorities, long scheduling
-  delays, or task-specific ACK/NACK workflows.
+- Operationally complex.
+- Order is only per partition, never global.
+- Rebalances and hot partitions can cause delays.
+- No per-message retries, delays, or priorities like a queue has.
 
 ## When to choose Kafka
 
-Choose Kafka for durable event history, CDC, integration events, analytics
-ingestion, and replayable inputs to processors such as Flink. Choose a queue for
-one-owner tasks with retry and DLQ semantics. Choose a database when the primary
-operation is querying and updating current state rather than consuming a log.
+Choose it for event history that many teams consume: CDC, service integration
+events, analytics pipelines, and input to stream processors like Flink. Use a
+queue for one-off tasks with retries, and a database when you mainly need to
+query current state.
 
-## Sources and further reading
+## Further reading
 
 - [Apache Kafka introduction](https://kafka.apache.org/documentation/#intro_concepts_and_terms)
-- [Kafka consumer groups and offsets](https://kafka.apache.org/41/javadoc/org/apache/kafka/clients/consumer/KafkaConsumer.html)
 - [Kafka replication](https://kafka.apache.org/documentation/#replication)
-- [Kafka producer configuration](https://kafka.apache.org/documentation/#producerconfigs)
 - [Kafka design](https://kafka.apache.org/documentation/#design)

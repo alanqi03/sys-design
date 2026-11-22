@@ -5,21 +5,14 @@ description: Events, logs, partitions, offsets, delivery semantics, event time, 
 
 # Streaming Fundamentals
 
-## Events and logs
-
-An event records something that happened: an order was placed, a file was
-uploaded, or a sensor produced a reading. An append-only log stores events in a
-stable order. Consumers track their position with an offset and can replay old
-events to rebuild state.
-
-Events should have a stable identifier, type, schema version, occurrence time,
-and enough context for consumers to interpret them:
+**Running example:** an online store. Every time someone checks out, the
+checkout service writes one `OrderPlaced` event to a stream. Four teams each
+read it for their own purpose.
 
 ```json
 {
   "event_id": "evt_01J8Z9Q4T2",
   "type": "OrderPlaced",
-  "schema_version": 1,
   "occurred_at": "2026-09-02T18:42:17Z",
   "order_id": "order_123",
   "customer_id": "customer_42",
@@ -27,146 +20,123 @@ and enough context for consumers to interpret them:
 }
 ```
 
-Prefer facts such as `OrderPlaced` over instructions such as `SendOrderEmail`
-when several independent consumers may use the event.
-
 ```{mermaid}
 flowchart LR
   checkout[Checkout service] -->|OrderPlaced| orders[(Orders stream)]
-  orders --> inventory[Inventory group]
-  orders --> billing[Billing group]
-  orders --> email[Email group]
-  orders --> analytics[Analytics group]
+  orders --> inventory[Inventory]
+  orders --> billing[Billing]
+  orders --> email[Email]
+  orders --> analytics[Analytics]
 ```
 
-If analytics is offline for an hour, the other groups continue. Analytics later
-resumes from its own offset and replays what it missed.
+## Events and logs
+
+A stream is an **append-only log** of events, kept in order. Unlike a queue,
+reading an event doesn't remove it. Each consumer remembers its own position
+(its **offset**), so:
+
+- Each team reads at its own pace.
+- If analytics goes down for an hour, the others keep going. When it comes back,
+  analytics continues from where it stopped.
+- A new team can start from the beginning and **replay** all past orders.
+
+Name events as **facts** (`OrderPlaced`), not instructions (`SendOrderEmail`).
+A fact can be used by any number of teams; an instruction has one owner.
 
 ## Partitions and ordering
 
-A stream is divided into partitions for parallelism. Each partition is ordered;
-there is normally no total order across partitions. The producer's partition key
-places related events together.
+A stream is split into **partitions** so several machines can share the load.
+Each event's **key** decides its partition.
 
 ```{mermaid}
 flowchart LR
-  producer[Order producer] --> router{Hash customer_id}
+  producer[Checkout] --> router{"hash(customer_id)"}
   router --> p0[(Partition 0)]
   router --> p1[(Partition 1)]
   router --> p2[(Partition 2)]
-  p0 --> c1[Consumer A]
-  p1 --> c1
-  p2 --> c2[Consumer B]
 ```
 
-Using `customer_id` preserves order for one customer's events. A random event ID
-distributes traffic well but does not preserve customer-level order. A celebrity
-or large tenant can make a seemingly reasonable key create a hot partition.
-
-The partition count limits useful parallelism within one consumer group. Extra
-consumers beyond the number of partitions remain idle.
+- Order is guaranteed **within a partition**, not across partitions.
+- Keying by `customer_id` keeps each customer's events in order.
+- A huge customer can make one partition "hot."
+- Within one consumer group, each partition goes to one consumer. With 3
+  partitions, a 4th consumer sits idle.
 
 ## Offsets and consumer groups
 
-An offset identifies a position inside one partition. A consumer group records
-its offsets so it can resume after restart. Two groups can read the same event,
-while consumers inside one group divide partitions among themselves.
+A **consumer group** is one team's set of consumers. Billing's group and
+analytics' group each get every event, and within a group the partitions are
+divided among its members.
 
-Committing an offset before processing risks losing work. Committing after
-processing permits redelivery after a crash. The second approach, combined with
-idempotent processing, is a common default.
+The consumer **commits** its offset to record progress. When to commit matters:
 
-Adding or removing consumers causes a **rebalance** that reassigns partitions.
-Consumers should stop cleanly, finish or checkpoint in-flight work, and avoid
-long pauses that make the group mistake a healthy member for a failed one.
+| Commit... | If the consumer crashes | Called |
+| --- | --- | --- |
+| Before processing | The event is skipped | At most once |
+| After processing | The event is processed again | At least once (the usual choice) |
 
-## Delivery semantics
+**Example:** billing charges order 123, then crashes before committing. On
+restart it sees the event again. Passing `event_id` as the payment provider's
+idempotency key prevents a second charge.
 
-- **At most once:** commit before processing; a crash can lose an event.
-- **At least once:** process before committing; a crash can duplicate an event.
-- **Exactly once:** coordinate input position, processor state, and output
-  commits within explicitly supported boundaries.
-
-For example, a billing consumer may charge an order and crash before committing
-its offset. The event is delivered again. Supplying
-`evt_01J8Z9Q4T2` as the payment provider's idempotency key prevents a second
-charge.
-
-“Exactly once” does not automatically make an arbitrary email, HTTP call, or
-database update happen once. Verify the guarantee across the complete path from
-source through state to sink.
+"Exactly once" exists only within specific systems, such as Kafka-to-Kafka
+transactions. It doesn't stop an email from being sent twice. Make side effects
+idempotent.
 
 ## Event time and windows
 
-**Event time** is when an event happened; **processing time** is when the system
-handled it. Delays and retries make those timestamps differ.
+- **Event time:** when it happened.
+- **Processing time:** when your system saw it.
 
-Suppose purchases occur at `10:01`, `10:04`, and `10:09`, but the `10:04` event
-arrives last:
+They differ because events can arrive late, for example from a phone that was
+offline:
 
 ```text
-Event time:       10:01  10:04  10:09
-Arrival order:    10:01  10:09  10:04
+Happened at:   10:01  10:04  10:09
+Arrived as:    10:01  10:09  10:04   ← the 10:04 event is late
 ```
 
-A watermark estimates how far event time has advanced. It lets a processor
-close a window while still allowing a defined amount of lateness.
+To count "orders per minute" correctly, group by event time and wait a little
+for stragglers. A **watermark** is the processor's estimate that "everything
+before 10:05 has probably arrived," so the 10:04 window can close.
 
-- **Tumbling window:** non-overlapping intervals, such as revenue per minute.
-- **Sliding window:** overlapping intervals, such as errors in the last five
-  minutes recomputed every minute.
-- **Session window:** activity separated by inactivity gaps, such as one user
-  browsing session.
+Window types:
 
-## Backpressure and recovery
+- **Tumbling:** back-to-back fixed blocks, like revenue per minute.
+- **Sliding:** overlapping blocks, like errors in the last 5 minutes, updated
+  every minute.
+- **Session:** a burst of activity ending after a gap, like one browsing visit.
 
-When producers outpace consumers, lag grows. Retention absorbs temporary bursts
-but cannot solve a permanent capacity mismatch.
+## Lag and backpressure
 
-Monitor:
+**Consumer lag** is how far a consumer is behind the newest event. Retention
+absorbs short bursts, but if consumers are always slower than producers, lag
+grows forever. Fixes: add consumers (up to the partition count), make each event
+cheaper to process, or add partitions.
 
-- consumer lag in records and wall-clock time;
-- records and bytes produced and consumed per second;
-- partition skew and rebalance frequency;
-- processing latency and error rate; and
-- storage use relative to retention.
+Send events that keep failing to a **dead-letter stream** instead of blocking
+the partition.
 
-Scale consumers up to the partition count, reduce per-event work, batch I/O, or
-repartition. A poison event should follow bounded retries and then move to a
-dead-letter stream with its failure context.
+## Replay and schema changes
 
-## Replay and schema evolution
+Replay lets you rebuild a broken view or start a new one from history. Throttle
+it so it doesn't overload live systems.
 
-Replay enables a new consumer to build a view from history or an existing
-consumer to repair corrupted output. It also re-executes old assumptions and
-bugs, so replay should be rate-limited, observable, and isolated from live
-traffic where necessary.
+Events live a long time, so change their shape carefully: add new optional
+fields, never remove or rename fields old consumers rely on, and test new code
+against old events.
 
-Evolve event schemas compatibly. Add optional fields before requiring them,
-version semantic changes, and test old events against new consumers. The event
-log is a long-lived interface, not an internal object dump.
+## Redis Pub/Sub and Streams
 
-## Redis messaging
+[Redis](../caching/redis.md) has two options. **Pub/Sub** is live only: a
+disconnected subscriber misses messages. **Redis Streams** keeps events and
+supports consumer groups and replay. It works for small workloads; use Kafka for
+long retention, many consumer groups, or large replays.
 
-[Redis](../caching/redis.md) provides two distinct models. Pub/Sub is live,
-at-most-once broadcast: a disconnected subscriber loses messages. Redis Streams
-retains an append-only sequence and supports consumer groups, pending entries,
-acknowledgements, and replay.
+## Checklist
 
-Redis Streams can fit compact operational workflows. Compare Kafka when the
-design needs longer retention, many independent consumer groups, large replay,
-or a broader stream-processing ecosystem.
-
-## Stream versus queue
-
-A stream distributes retained facts to independent groups. A queue assigns one
-task to one worker. See [Queue Fundamentals](../queues/queue-fundamentals.md) for
-ACK/NACK behavior, visibility timeouts, retry backoff, DLQs, and worker pools.
-
-## Design checklist
-
-- What is the event's identity, schema, partition key, and retention period?
-- Which ordering scope is truly required?
-- When are offsets committed, and can processing safely repeat?
-- How are late and out-of-order events handled?
-- How will lag, rebalancing, replay, and schema evolution be operated?
+- What's the event's key, and what order do you actually need?
+- When do consumers commit, and is reprocessing safe?
+- How will you handle late events?
+- How long is retention, and how will you monitor lag?
+- How will event schemas change without breaking consumers?

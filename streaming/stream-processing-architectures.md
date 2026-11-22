@@ -5,171 +5,108 @@ description: Processing graphs, stateful operators, materialized views, event-dr
 
 # Stream-Processing Architectures
 
-Stream processing continuously turns input events into new events, alerts, or
-queryable views. Unlike a consumer that handles one record independently, a
-processor often remembers state across records and coordinates recovery across
-an entire graph of operators.
+A stream processor reads events continuously and produces new events, alerts, or
+up-to-date tables. Unlike a simple consumer that handles each event on its own, a
+processor often **remembers** things across events, like "how many payments has
+this card made in the last 5 minutes?"
 
-## A processing graph
-
-Consider fraud detection for card payments:
+## Example: card fraud detection
 
 ```{mermaid}
 flowchart LR
-  payments[(Payments stream)] --> validate[Validate schema]
-  validate --> key[Key by card_id]
-  key --> velocity[Count last 5 minutes]
-  profiles[(Customer profiles)] --> enrich[Enrich]
-  velocity --> enrich
-  enrich --> rules{Fraud rules}
-  rules -->|suspicious| alerts[(Fraud alerts)]
-  rules -->|allowed| approved[(Approved payments)]
+  payments[(Payments stream)] --> validate[Validate]
+  validate --> key["Group by card_id"]
+  key --> count["Count payments<br/>in last 5 min"]
+  count --> rules{"More than 10?"}
+  rules -->|yes| alerts[(Fraud alerts)]
+  rules -->|no| approved[(Approved)]
 ```
 
-`Validate` is stateless: each record can be processed alone. The five-minute
-count is stateful: it remembers recent payments for each card. Enrichment is
-stateful when profiles are held locally or joined over time.
+- **Validate** is **stateless**: each payment is checked on its own.
+- **Count** is **stateful**: it remembers recent payments for each card.
 
-## Stateless and stateful operators
+Group state by the same key as the events (`card_id`). Each worker then owns
+all the state for its cards and never needs a database call per event.
 
-Common stateless operators include:
+## Stateless vs. stateful
 
-- `map`: turn cents into dollars;
-- `filter`: keep only successful payments; and
-- `flatMap`: split one envelope into several events.
-
-Common stateful operators include:
-
-- windowed counts and sums;
-- joins between streams or with changing reference data;
-- deduplication by event ID;
-- pattern detection across a sequence; and
-- materialized views such as current account totals.
-
-State should be partitioned by the same key as the events that update it. That
-lets each parallel operator own a disjoint subset—for example, all state for
-`card_42`—without a remote database call per event.
-
-## Example: real-time conversion rate
-
-Inputs:
-
-```text
-ProductViewed  {user_id, product_id, occurred_at}
-OrderPlaced    {user_id, product_id, occurred_at}
-```
-
-The processor groups by `product_id`, counts both events in five-minute windows,
-and emits:
-
-```json
-{
-  "window_start": "2026-09-02T18:40:00Z",
-  "product_id": "product_123",
-  "views": 820,
-  "orders": 41,
-  "conversion_rate": 0.05
-}
-```
-
-A dashboard reads this compact output instead of rescanning raw click history.
-Late events either update the result, go to a correction stream, or are dropped
-according to the declared lateness policy.
+| Stateless (each event alone) | Stateful (remembers across events) |
+| --- | --- |
+| `map`: cents → dollars | Count or sum over a time window |
+| `filter`: keep successful payments | Join two streams |
+| `flatMap`: split one event into several | Drop duplicate event IDs |
+| | Spot a pattern ("3 failed logins, then a success") |
 
 ## Common architectures
 
-| Architecture | Input | Output | Example |
-| --- | --- | --- | --- |
-| Streaming ETL | Raw operational events | Clean, enriched events | Normalize CDC before a warehouse |
-| Materialized view | Domain events | Query-optimized table | Current order status by customer |
-| Event-driven application | Business events | Commands or new events | Reserve inventory after `OrderPlaced` |
-| Streaming analytics | Telemetry or behavior | Windows and alerts | Error rate over the last five minutes |
-| Complex event processing | Several event types | Detected patterns | Login from two countries within ten minutes |
+| Architecture | What it does | Example |
+| --- | --- | --- |
+| **Streaming ETL** | Clean, enrich, and route raw events | Normalize CDC events before loading the warehouse |
+| **Materialized view** | Fold events into a current-state table | `OrderPlaced → Paid → Shipped` becomes one row: status = shipped |
+| **Event-driven app** | React to events with new actions | Reserve inventory when `OrderPlaced` arrives |
+| **Streaming analytics** | Metrics over recent time | Error rate over the last 5 minutes |
+| **Pattern detection** | Find sequences across events | Logins from two countries within 10 minutes |
 
-### Streaming ETL
+**Example: live conversion rate.** Count `ProductViewed` and `OrderPlaced` per
+product in 5-minute windows and emit:
 
-Parse, validate, redact, enrich, and route data continuously. Keep the original
-event available so bad transformations can be repaired and replayed.
+```json
+{ "window_start": "18:40", "product_id": "p_123", "views": 820, "orders": 41, "conversion_rate": 0.05 }
+```
 
-### Materialized views
+A dashboard reads this small result instead of re-scanning every click.
 
-Fold a history of facts into current state. For example,
-`OrderPlaced → PaymentCaptured → OrderShipped` produces one row describing the
-latest order status. Make view updates idempotent and store the last applied
-offset or version with the view when possible.
+## Checkpoints and recovery
 
-### Event-driven applications
-
-Services react to facts without direct synchronous calls. This reduces temporal
-coupling but introduces eventual consistency. Use an outbox or equivalent atomic
-publication pattern so a database commit and its event cannot silently diverge.
-
-### Streaming analytics and patterns
-
-Windows answer questions over recent time. Pattern processors detect sequences,
-absence, or thresholds—for example, three failed logins followed by a successful
-login from a new device.
-
-## State, checkpoints, and recovery
+What happens to the "last 5 minutes" counts if a worker crashes? The processor
+regularly saves a **checkpoint**: a snapshot of all its state plus how far it
+has read in each input.
 
 ```{mermaid}
 sequenceDiagram
-  participant S as Replayable source
-  participant P as Stateful processor
+  participant S as Input stream
+  participant P as Processor
   participant C as Checkpoint storage
-  participant O as Output sink
-  S->>P: records after offset 8200
-  P->>O: transactional/idempotent output
-  P->>C: state snapshot + source offsets
-  Note over P: processor crashes
-  C-->>P: restore snapshot
-  S-->>P: replay from checkpointed offsets
+  S->>P: events after offset 8200
+  P->>C: save state + "read up to 8200"
+  Note over P: crash
+  C-->>P: restore state
+  S-->>P: replay from 8200
 ```
 
-A consistent checkpoint ties operator state to source positions. After failure,
-the processor restores both and replays later events. End-to-end exactly-once
-behavior additionally requires a sink that participates transactionally or
-handles repeated output idempotently.
+After a crash, the processor restores the state and re-reads from the saved
+position, so nothing is lost. Some output may be written twice, so outputs must
+be idempotent or transactional.
 
-Automatic checkpoints optimize failure recovery. Manually retained savepoints
-support planned upgrades, migrations, and rescaling. Treat them like operational
-state: protect the storage, test restoration, and keep operator identities
-stable across compatible deployments.
+A **savepoint** is a checkpoint you trigger by hand before an upgrade or
+rescaling.
 
-## Lambda versus Kappa
+## Lambda vs. Kappa
 
-A **Lambda architecture** has separate batch and streaming paths, then merges
-their results. It can recompute accurate history with mature batch tools, but
-duplicates business logic and creates two systems to operate.
+- **Lambda:** a batch pipeline and a streaming pipeline side by side, with
+  results merged. Accurate, but you write and run the logic twice.
+- **Kappa:** one streaming pipeline. To recompute history, replay the log
+  through it. Simpler, if the log keeps enough history.
 
-A **Kappa architecture** uses one replayable log and one processing path for
-both live data and recomputation. It is simpler when the stream processor can
-efficiently replay the required history.
+If results only need to be fresh once a day, a nightly batch job may be simpler
+than any streaming system.
 
-Prefer the smallest architecture that meets correctness and recovery needs. A
-nightly batch job may be better than permanent streaming infrastructure when a
-result does not need to be fresh.
+## Scaling
 
-## Scaling and backpressure
+- Parallelism is capped by the number of input partitions.
+- Rescaling moves state between workers, which is slow when state is large.
+- A hot key (one very busy card) stays on one worker however many you add.
+- Watch input lag, checkpoint time, state size, and how far watermarks trail.
 
-Parallelism is limited by input partitions and by the ability to repartition
-state. Increasing workers may trigger a shuffle and move large state snapshots.
-Hot keys remain hot even when the rest of the workload is evenly distributed.
+## Checklist
 
-Backpressure should flow upstream rather than allowing unbounded buffers. Watch
-input lag, busy time, checkpoint duration and failures, state size, watermark
-delay, output latency, and skew by key.
+- Which steps need state, and what key splits it?
+- Do you need event time, and how late can events arrive?
+- Can the input be replayed, and can the output handle duplicates?
+- How big will state and checkpoints get?
+- Is real-time worth it, or would a batch job do?
 
-## Design checklist
-
-- Which operators are stateful, and what key partitions their state?
-- Is event time required, and how much lateness is acceptable?
-- Can the source replay and can the sink tolerate repeated writes?
-- How large can state and checkpoints become?
-- How will schema and application upgrades preserve state compatibility?
-- Is continuous processing worth its operational cost versus periodic batch?
-
-## Sources and further reading
+## Further reading
 
 - [Apache Flink: stateful stream processing](https://nightlies.apache.org/flink/flink-docs-stable/docs/concepts/stateful-stream-processing/)
 - [Apache Flink: checkpoints](https://nightlies.apache.org/flink/flink-docs-stable/docs/ops/state/checkpoints/)
