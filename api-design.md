@@ -5,33 +5,46 @@ description: Practical choices for clear, secure, reliable APIs.
 
 # API Design
 
-An API is a contract between a client and a service. Good API design makes that
-contract predictable when requirements change, clients retry, and parts of the
-system fail.
+An API is a contract between a client and a service. A good one stays
+predictable when requirements change, clients retry, and things fail.
 
-Before choosing URLs or field names, decide:
+**Example:** a ride-sharing app's "request a ride" endpoint.
 
-- **Operations:** What can clients do, and which operations change state?
-- **Contracts:** What do requests, successful responses, and errors look like?
-- **Compatibility:** How can the API evolve without breaking existing clients?
-- **Reliability:** Which writes need idempotency, timeouts, or asynchronous work?
-- **Security:** How does the service authenticate a caller and authorize an
-  action?
+```http
+POST /rides
+Idempotency-Key: 9f1c2a
+Authorization: Bearer eyJhbGciOi...
 
-Authentication proves **who the caller is**. Authorization decides **what that
-caller may do**. They are related, but a valid login never removes the need for
-authorization checks on protected resources.
+{ "pickup": "37.77,-122.41", "dropoff": "37.80,-122.27" }
+```
+
+```http
+201 Created
+
+{ "ride_id": "ride_881", "status": "searching" }
+```
+
+Even this small call answers the five questions every API should:
+
+| Question | In the example |
+| --- | --- |
+| **What can clients do?** | Create a ride (`POST /rides`) |
+| **What do requests, responses, and errors look like?** | JSON body in; `201` with `ride_id` out; `400` for a bad location |
+| **How does it change without breaking clients?** | Add new optional fields; never rename or remove old ones |
+| **What happens on retry?** | The `Idempotency-Key` stops a retried request from booking two rides |
+| **Who is calling, and are they allowed?** | The bearer token says who the rider is |
+
+**Authentication** proves who the caller is. **Authorization** decides what they
+may do. Being logged in as rider 42 doesn't let you cancel rider 77's ride.
 
 ## In this section
 
-- [API Types: REST, gRPC, and GraphQL](./api-design/api-types.md) compares three
-  common API styles, including their mental models, strengths, trade-offs, and
-  best use cases.
-- [Authentication: Sessions vs. JWTs](./api-design/authentication.md) compares
-  opaque server-side sessions with signed JWT bearer tokens, including request
-  flows, trade-offs, and safe defaults.
+- [API Types: REST, gRPC, and GraphQL](./api-design/api-types.md): three API
+  styles and when to use each.
+- [Authentication: Sessions vs. JWTs](./api-design/authentication.md): two ways
+  to remember who's logged in.
 
 ```{tip}
-Design the public contract around the client's job, not around the current
-database tables or internal service boundaries.
+Design the API around what the client needs to do, not around your database
+tables.
 ```

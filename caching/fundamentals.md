@@ -4,105 +4,105 @@ title: Caching Fundamentals
 
 # Caching Fundamentals
 
-A cache stores a reusable result closer to where it is needed. It can reduce
-latency, database load, network transfer, and cost. It also creates another copy
-of data whose freshness and failure behavior must be managed.
+A cache stores a copy of data closer to where it's needed, so reads are faster
+and the source does less work.
+
+**Running example:** an online store's product page. It's viewed 10,000 times
+per second, but a product's price changes maybe once a day. Reading it from the
+database on every view is wasted work.
 
 ## Where caches live
 
-Caches appear at several layers:
+| Layer | Example | Shared by |
+| --- | --- | --- |
+| Browser | The product image, cached for a day | One user |
+| CDN | Product images and JS served from a city near the user | All users in a region |
+| In-process | A small map in each app server's memory | One server |
+| Distributed cache | Redis holding `product:123` | Every app server |
+| Database | Postgres keeping hot pages in RAM | Automatic |
 
-- browsers cache static assets and responses;
-- CDNs cache content near users;
-- reverse proxies cache shared HTTP responses;
-- applications keep local or distributed values; and
-- databases cache data and query pages in memory.
+## Caching patterns
 
-Each layer has a different scope. A process-local cache is extremely fast but is
-not shared and disappears on restart. A distributed cache is shared across the
-fleet but adds a network hop and another service to operate.
+### Cache-aside (the default)
 
-## Caching Patterns
+The app checks the cache first. On a miss, it reads the database and stores the
+result in the cache.
 
-| Pattern | How it works | When to choose it | Main trade-off |
-| --- | --- | --- | --- |
-| **Cache-aside** | The application checks the cache, reads the database on a miss, then puts the result in the cache. Writes usually update the database and invalidate the cached value. | **The default choice when there is no special use case.** It is simple, works with most databases and caches, and lets the application decide what to cache. | Data can remain stale until invalidation or TTL expiry, and simultaneous misses can stampede the database. |
-| **Read-through** | The application asks the cache for data; on a miss, the cache or caching library loads the value from the source automatically. | Choose it when many callers should share one standardized loading and refresh policy. | It couples loading logic to the cache layer, and the first request for an uncached value is still slow. |
-| **Write-through** | A write goes through the cache layer, which synchronously updates the source of truth before reporting success. The cache is also updated with the new value. | Choose it when **read-after-write freshness or strong consistency is important** and each write can afford database latency—for example, account settings or product configuration. | Cache and database updates are not automatically one atomic transaction; partial failures and concurrent writes still need careful handling. It also spends cache space on values that may never be read. |
-| **Write-around** | Writes go directly to the database and bypass or invalidate the cache. A later read fills the cache. | Choose it for write-heavy data that is rarely read immediately, such as bulk imports or archival records. | The first read after a write is a cache miss, and incorrect invalidation can expose an older cached value. |
-| **Write-behind** | The cache accepts the write immediately and asynchronously flushes it to durable storage later. | Choose it for **very high write volume where some delay or loss is acceptable**, such as metrics, counters, or aggregated activity signals. | A cache failure can lose acknowledged writes, readers may see different states, and retry, ordering, and recovery logic become harder. Avoid it for payments or critical inventory. |
-| **Refresh-ahead** | Popular entries are refreshed shortly before they expire instead of making a user wait for the next miss. | Choose it for predictable hot reads whose source computation is expensive, such as a frequently viewed dashboard. | Refreshes may waste work on entries that nobody reads again, and a failed refresh needs a stale-data policy. |
-| **CDN caching** | Static or cacheable HTTP content is copied to edge locations near users. | Choose it for images, videos, JavaScript, CSS, downloads, and public responses that can be reused across users. | Invalidation is distributed and may take time; private or personalized data needs careful cache keys and headers. |
-| **In-process caching** | Each service instance keeps a small local copy in its own memory, often in front of a shared cache. | Use it as an optimization layer for **extremely hot keys** that would otherwise hammer one Redis key or network endpoint—for example, small configuration or popular lookup values. | Every instance can hold a different or stale value, memory is duplicated, and entries disappear on restart. Keep TTLs short and retain the shared source of truth. |
-
-“Strong consistency” in the write-through row means callers should not observe
-an old cached value after a successful write. Achieving that guarantee still
-requires an ordered write protocol, safe retries, and a plan for the case where
-the database succeeds but the cache update fails.
-
-## Invalidation and freshness
-
-A time to live (TTL) bounds how long an entry may remain without refresh. A short
-TTL improves freshness but increases misses; a long TTL does the reverse.
-Explicit invalidation can reduce staleness but is difficult to make perfectly
-reliable.
-
-Versioned keys are useful when old entries may safely expire on their own.
-Event-driven invalidation can propagate updates quickly, but consumers must
-handle duplicates, delay, and missed events.
-
-```{note}
-Treat cached data as disposable. If losing the cache would lose the only copy of
-important state, it is acting as a database.
+```python
+product = cache.get("product:123")
+if product is None:                       # miss
+    product = db.load_product(123)
+    cache.set("product:123", product, ttl=300)
+return product
 ```
 
-## Eviction and admission
+When the price changes, update the database, then **delete** `product:123`. The
+next read reloads it.
 
-Finite caches need an eviction policy. LRU favors recently used entries; LFU
-favors frequently used entries. Random eviction can be inexpensive and
-surprisingly effective. Large, rarely reused objects can pollute a cache, so an
-admission policy may reject items that are unlikely to pay for their storage.
+### Other patterns
 
-## Consistency
-
-First decide how harmful a stale cache read would be. The stricter the freshness
-requirement, the less freedom the system has to serve cached data during delays
-or failures.
-
-| Requirement | What to choose | Typical flow and trade-off |
+| Pattern | How it works | Use it for |
 | --- | --- | --- |
-| **Eventual consistency** | Use **cache-aside** with a TTL and invalidate after database writes. CDN, read-through, and refresh-ahead caching also fit when their staleness is acceptable. | Write the source of truth, then delete or refresh the cached copy. Events can spread invalidations, but until they arrive—or the TTL expires—some readers may see old data. This is usually appropriate for feeds, recommendations, like counts, product descriptions, images, and analytics. |
-| **Strong consistency** | The safest choice is to **bypass the cache for correctness-sensitive reads** and use the database primary. If caching is necessary, use a carefully coordinated **write-through** path. | Do not report success until the durable write commits and readers cannot obtain the older cached version. This needs ordered writes, version checks or compare-and-set, and a failure policy that falls back to the source of truth or rejects the read instead of serving stale data. Use it for balances, inventory reservations, authorization changes, and other invariants. |
+| **Read-through** | Like cache-aside, but the cache library loads misses for you | Sharing one loading policy across many callers |
+| **Write-through** | Every write updates the database and the cache together | Data that must be fresh right after a write, like account settings |
+| **Write-around** | Writes go to the database only; the cache fills on the next read | Data written often but rarely read right away, like bulk imports |
+| **Write-behind** | Writes go to the cache now and reach the database later | Very high-volume data where losing a little is OK, like view counts |
+| **Refresh-ahead** | Popular entries are reloaded just before they expire | Expensive, predictable reads, like a busy dashboard |
 
-Write-through is a useful building block for read-after-write freshness, but it
-does not make the cache and database one atomic transaction. For example, the
-database might commit just before the cache update fails. The design must then
-invalidate the old value, retry safely, or temporarily bypass the cache.
+Avoid write-behind for anything important, such as payments or inventory. If
+the cache crashes before flushing, those writes are gone.
 
-TTL and event-driven invalidation provide a **bounded or usually short stale
-window**, not strict consistency. During a network partition, a strongly
-consistent path must reach the authoritative copy or fail; returning an old
-cached value is choosing availability over consistency.
+## Keeping data fresh
 
-## Failure modes
+- **TTL (time to live):** the entry expires after a set time. With a 5-minute
+  TTL, a price change shows up within 5 minutes at most. Shorter TTLs are
+  fresher but cause more misses.
+- **Invalidate on write:** delete the key when the data changes, so the change
+  shows up almost immediately. Keep a TTL as a backup in case a delete is
+  missed.
 
-- A **cache stampede** occurs when many callers regenerate the same expired
-  value. Request coalescing, early refresh, and randomized TTLs help.
-- A **hot key** overloads one shard. Replication or local caching can spread its
-  reads.
-- A **cold start** shifts full traffic to the backing store after restart or
-  flush. Warm critical keys gradually and ensure the source can survive misses.
-- A **cache outage** can become a database outage. Use bounded concurrency and
-  consider serving slightly stale data where safe.
+Choose per feature how stale is acceptable:
 
-Evaluate a cache with hit rate, miss latency, eviction rate, memory use, and load
-removed from the source—not hit rate alone.
+| Data | Stale is OK? | Approach |
+| --- | --- | --- |
+| Product description, like counts, feeds | Yes, for seconds to minutes | Cache-aside with TTL and invalidation |
+| Account balance, stock at checkout | No | Skip the cache; read the database |
 
-## Design checklist
+```{note}
+Treat cached data as disposable. If losing the cache would lose data, it's
+being used as a database.
+```
 
-- What is the source of truth, and can every cached value be reconstructed?
-- Which layer should own the cache, and who shares each entry?
-- How stale may data become, and how will entries be invalidated?
-- What happens when a popular key expires or the whole cache is cold?
-- Which eviction policy matches the access pattern?
-- Can the backing service survive misses, timeouts, and a cache outage?
+## Eviction
+
+When the cache is full, it must drop something:
+
+- **LRU** (least recently used) drops what hasn't been read in the longest time.
+  The usual default.
+- **LFU** (least frequently used) drops what's read least often. Better when a
+  few items are always popular.
+
+## What goes wrong
+
+- **Stampede:** the product page's cache entry expires, and 10,000 requests miss
+  at once and all hit the database. Fixes: let one request reload while the
+  others wait, add random jitter to TTLs, or refresh popular keys early.
+- **Hot key:** one key gets so much traffic it overloads its cache server. Fix:
+  keep a short-lived copy in each app server's memory.
+- **Cold start:** after a restart the cache is empty and all traffic hits the
+  database. Fix: preload the most popular keys and make sure the database can
+  survive the misses.
+- **Cache outage:** if the cache goes down, the full load lands on the database
+  and can take it down too. Fix: limit concurrent database queries and fail
+  gracefully.
+
+Judge a cache by hit rate, latency on a miss, and how much load it removes from
+the database.
+
+## Checklist
+
+- What's the source of truth, and can every cached value be rebuilt from it?
+- How stale can each kind of data be?
+- How are entries invalidated when data changes?
+- What happens when a popular key expires or the cache restarts empty?
+- Can the database survive if the cache goes down?

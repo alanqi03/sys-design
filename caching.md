@@ -4,20 +4,16 @@ title: Caching
 
 # Caching
 
-Caching places reusable data or computation closer to the caller. It is one of
-the most effective ways to reduce latency and protect a slower source, but every
-cache introduces a second copy of data whose freshness, capacity, and failure
-behavior must be designed deliberately.
+A cache keeps a copy of data somewhere faster than its source. Reading a product
+from Redis takes about 1 ms; reading it from the database might take 20 ms.
+The cost is a second copy of the data that can go stale.
 
 ## In this section
 
-- [Caching Fundamentals](./caching/fundamentals.md) explains cache placement,
-  read and write patterns, invalidation, eviction, stampedes, hot keys, and
-  failure planning.
-- [Redis](./caching/redis.md) applies those ideas to an in-memory data structure
-  server that also supports counters, leaderboards, messaging, streams,
-  coordination, and optional persistence.
+- [Caching Fundamentals](./caching/fundamentals.md): where caches live, how to
+  read and write through them, keeping them fresh, and what goes wrong.
+- [Redis](./caching/redis.md): the most common cache, which also handles
+  counters, leaderboards, rate limits, and messaging.
 
-Start with the fundamentals. Redis is a useful implementation, but choosing it
-does not remove the need to define the source of truth, acceptable staleness,
-memory limits, and behavior during a cache miss or outage.
+Whatever cache you use, decide up front: what's the source of truth, how stale
+can the data be, and what happens when the cache is down?
