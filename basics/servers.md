@@ -4,86 +4,90 @@ title: Servers
 
 # Servers
 
-A server accepts work, applies business logic, and returns or emits a result.
-At small scale this may be one process on one machine. At larger scale it is a
-fleet of instances behind a [load balancer](../traffic-management/load-balancing.md).
+A server takes a request, runs your code, and returns a result. In production
+that's usually a fleet of identical servers behind a
+[load balancer](../traffic-management/load-balancing.md).
 
-## The request lifecycle
+**Running example:** an order service handling `GET /orders/123`.
 
-A typical service performs the following work:
+## What happens in a request
 
-1. accept and parse a request;
-2. authenticate the caller and authorize the action;
-3. validate input;
-4. read or update state through dependencies;
-5. construct a response; and
-6. record metrics, logs, and traces.
+| Step | Example | Time |
+| --- | --- | --- |
+| 1. Parse the request | Read the path and headers | ~0.1 ms |
+| 2. Check who's calling | Verify the token; may this user see order 123? | ~1 ms |
+| 3. Validate input | Is `123` a valid order ID? | ~0.1 ms |
+| 4. Load data | Query the database | ~10 ms |
+| 5. Build the response | Turn the row into JSON | ~0.5 ms |
+| 6. Record it | Log, metrics, trace | ~0.1 ms |
 
-CPU time is only part of the cost. Many services spend most of a request waiting
-for databases, caches, or other services. Concurrency lets a server use that
-waiting time to process other requests.
+Most of the time is spent **waiting** on the database, not computing. That's why
+one server can work on many requests at once: while one waits, another runs.
 
-## Processes, threads, and asynchronous I/O
+## Handling many requests at once
 
-Processes isolate memory and failures but are comparatively expensive. Threads
-share memory and are cheaper, but require careful synchronization. Event-driven
-servers use asynchronous I/O to manage many connections with a small number of
-threads. The right model depends on the language runtime and whether the work is
-CPU-bound or I/O-bound.
+- **Processes:** fully isolated, so one crash doesn't affect others, but heavy.
+- **Threads:** lighter, and share memory, which needs care to avoid races.
+- **Async I/O (event loop):** a few threads juggle thousands of waiting requests.
+  Node.js and Python `asyncio` work this way.
 
-CPU-heavy work needs bounded parallelism and often a separate worker pool.
-Unbounded concurrency can exhaust memory, file descriptors, connection pools, or
-downstream capacity long before CPU reaches 100%.
+Waiting-heavy work (database calls, HTTP calls) suits async or many threads.
+CPU-heavy work, like resizing images, needs a limit of about one task per core,
+often in a separate worker pool.
+
+Always cap concurrency. A server can run out of memory or database connections
+long before CPU hits 100%.
 
 ## Scaling
 
-**Vertical scaling** gives one machine more CPU, memory, or storage. It is simple
-but has hardware limits and can leave a large failure domain. **Horizontal
-scaling** adds instances. It provides greater capacity and redundancy, but
-requires traffic distribution and coordination.
+- **Vertical:** a bigger machine. Simple, but there's a ceiling, and it's still
+  one machine that can fail.
+- **Horizontal:** more machines. More capacity and redundancy, but traffic must
+  be spread across them.
 
-Stateless request handlers are easiest to scale horizontally. Durable state
-should normally live in a database or object store, while short-lived session
-state can live in a shared cache or be encoded in a signed token. If requests
-must return to a particular server, deployments and failures become harder.
+Horizontal scaling is easy when servers are **stateless**: keep data in the
+database and sessions in Redis or a signed token, so any server can handle any
+request.
 
-## Capacity and queueing
+## How many requests are in flight?
 
-Little's Law provides a useful approximation for a stable system:
+**Little's Law:**
 
 $$
 L = \lambda W
 $$
 
-where $L$ is the average number of requests in the system, $\lambda$ is the
-arrival rate, and $W$ is the average time each request spends in the system. At
-1,000 requests per second and 100 ms average latency, roughly 100 requests are in
-flight on average.
+In-flight requests ($L$) = arrival rate ($\lambda$) × time per request ($W$).
 
-As utilization approaches a resource's limit, queues grow and latency rises
-sharply. Capacity plans therefore need headroom for bursts, failures, and
-deployments—not merely the average load.
+**Example:** 1,000 requests/s × 0.1 s each = **100 requests in flight** at any
+moment. If the database slows down and each request takes 1 s, that becomes
+1,000 in flight, possibly more than the server's connection pool can hold.
 
-## Overload and resilience
+Response times jump sharply as a server nears full capacity, so plan headroom
+for bursts, deployments, and lost servers. A common target is 50–70% average
+utilization.
 
-A resilient server protects itself and its dependencies with:
+## Surviving overload
 
-- **bounded queues** to cap memory use;
-- **rate limits** to control unfair or excessive traffic;
-- **load shedding** to reject work it cannot finish in time;
-- **circuit breakers** to stop repeatedly calling a failing dependency; and
-- **bulkheads** to prevent one workload from consuming every resource.
+When more requests arrive than the server can handle:
 
-Graceful degradation can preserve core operations by disabling optional
-features. Returning a prompt `503 Service Unavailable` is often better than
-accepting work that will time out after consuming resources.
+| Technique | What it does | Example |
+| --- | --- | --- |
+| **Bounded queue** | Caps how many requests wait | At most 200 waiting; reject the rest |
+| **Rate limit** | Caps each client | 100 requests/min per API key |
+| **Load shedding** | Rejects work early with `503` | Better than a 30-second timeout |
+| **Circuit breaker** | Stops calling a failing dependency for a while | Payments down → fail fast for 30 s |
+| **Bulkhead** | Separate limits per workload | Reports can't use up the checkout threads |
 
-## Deployment and observability
+Returning a quick `503` beats accepting work that will time out anyway. You can
+also turn off optional features (recommendations) to keep core ones (checkout)
+working.
 
-Rolling, blue-green, and canary deployments trade speed against risk and
-resource cost. Instances should stop accepting new traffic, finish bounded
-in-flight work, and then exit during a graceful shutdown.
+## Deploys and monitoring
 
-At minimum, observe request rate, error rate, and latency, plus saturation of
-critical resources. Structured logs explain individual events; metrics reveal
-trends; distributed traces show how time moves through a request path.
+- **Deploys:** rolling (replace a few servers at a time), blue-green (switch all
+  traffic to a new fleet), or canary (send 5% of traffic first). On shutdown,
+  stop taking new requests and finish current ones.
+- **Monitor:** request rate, error rate, latency (p50 and p99), and saturation
+  (CPU, memory, connection pools). Logs explain single requests, metrics show
+  trends, and traces show where time goes across services.

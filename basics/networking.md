@@ -4,93 +4,94 @@ title: Networking
 
 # Networking
 
-For a distributed system, the network is both the connection between components
-and a major source of delay and failure. A designer does not need to implement a
-network stack, but must understand what happens to a request in transit.
+In a distributed system, every call between components crosses the network,
+and the network is slow and unreliable compared with a function call. You don't
+need to build a network stack, but you do need to know what a request goes
+through.
 
-## From a name to a response
+## From a URL to a response
 
-When a client requests `https://example.com/items/42`, it usually performs these
-steps:
+When a browser opens `https://example.com/items/42`:
 
-1. **DNS resolution** maps the hostname to an IP address.
-2. **Connection setup** establishes a transport connection, commonly TCP or
-   QUIC.
-3. **TLS negotiation** authenticates the server and creates an encrypted channel.
-4. **HTTP exchange** sends a request and receives a response.
-5. Intermediaries such as a CDN, reverse proxy, or load balancer may route or
-   answer the request before it reaches the application.
+| Step | What happens | Typical cost |
+| --- | --- | --- |
+| 1. DNS | Look up the IP for `example.com` | 0 ms if cached, ~20–100 ms if not |
+| 2. TCP | Open a connection | 1 round trip |
+| 3. TLS | Verify the server's certificate and set up encryption | 1 more round trip |
+| 4. HTTP | Send `GET /items/42` and get the response | 1 round trip + server time |
 
-Connection reuse, DNS caching, and colocating services reduce the number and
-cost of these round trips.
+A CDN, proxy, or load balancer may answer or forward the request along the way.
 
-## Latency and throughput
+With a 50 ms round trip, a brand-new connection costs about 150 ms before the
+server does any work. Reusing connections, caching DNS, and putting servers
+near users cut this down.
 
-**Latency** is the time required to complete one operation. **Throughput** is the
-number of operations completed per unit time. They are related but not
-interchangeable: batching may improve throughput while increasing the time an
-individual item waits.
+## Latency vs. throughput
 
-For user-facing systems, averages hide poor experiences. Percentiles are more
-useful: a p99 latency of 800 ms means 1% of requests take at least 800 ms.
-Tail latency compounds when one page depends on many downstream calls.
+- **Latency:** how long one request takes (e.g. 80 ms).
+- **Throughput:** how many requests finish per second (e.g. 5,000/s).
+
+Batching usually raises throughput but makes each item wait longer.
+
+Averages hide slow requests, so use **percentiles**. A p99 of 800 ms means 1 in
+100 requests takes at least 800 ms. If a page makes 10 backend calls, the chance
+that at least one hits its p99 is about 10%.
 
 ## Transport choices
 
-TCP provides an ordered, reliable byte stream. Lost packets are retransmitted,
-which is convenient for most application protocols but can add delay. UDP sends
-independent datagrams without delivery or ordering guarantees. QUIC builds a
-secure, multiplexed transport on UDP and is used by HTTP/3.
+- **TCP:** reliable and ordered; lost packets are resent. Used by most
+  protocols.
+- **UDP:** no guarantees, but low overhead. Used for games, video calls, DNS.
+- **QUIC:** reliable and encrypted, built on UDP. Used by HTTP/3.
 
-Choose at the application level unless the problem specifically requires a
-custom protocol:
+In practice, pick at the application level:
 
 | Need | Common choice |
 | --- | --- |
 | Public request/response API | HTTPS with REST or GraphQL |
-| Typed service-to-service RPC | gRPC over HTTP/2 |
-| Browser updates | WebSocket or server-sent events |
-| Asynchronous delivery | A message broker or event stream |
+| Service-to-service calls | gRPC |
+| Live updates to a browser | WebSockets or server-sent events |
+| Background work | A queue or event stream |
 
-## Routing and load balancing
+## Load balancing
 
-A load balancer distributes traffic across healthy server instances. Common
-strategies include round robin, least connections, weighted routing, and
-consistent hashing. Layer 4 load balancers route using transport information;
-Layer 7 load balancers understand application protocols such as HTTP and can
-route by host, path, or header.
-
-Health checks should reflect whether an instance can serve traffic, but they
-must be cheap and stable. A dependency outage should not necessarily make every
-application instance fail its health check and trigger a restart storm.
+A load balancer spreads requests across healthy servers. Layer 4 balancers route
+by IP and port; Layer 7 balancers read HTTP and can route by URL or header. See
+[Load Balancing](../traffic-management/load-balancing.md).
 
 ## Timeouts, retries, and idempotency
 
-Every remote call needs a finite timeout. A retry can mask a transient failure,
-but it also adds load precisely when a dependency may be struggling. Robust
-clients generally use:
+Every network call needs a **timeout**. Without one, a hung dependency ties up
+your server forever.
 
-- a bounded number of attempts;
-- exponential backoff;
-- random jitter so clients do not retry in lockstep; and
-- an overall deadline shared across nested calls.
+Retries hide brief failures but add load right when a service is struggling.
+Retry carefully:
 
-A retry is safest when an operation is **idempotent**: performing it more than
-once has the same intended effect as performing it once. APIs can make a
-non-idempotent action, such as creating a payment, safely retryable by accepting
-an idempotency key and remembering the result.
-
-```{warning}
-A client timeout does not prove that the server did no work. The response may
-have been lost after the operation committed.
+```text
+attempt 1 → fails
+wait ~100 ms (+ random jitter) → attempt 2 → fails
+wait ~200 ms (+ random jitter) → attempt 3 → give up
 ```
 
-## Design checklist
+- Limit the number of attempts.
+- Wait longer each time (exponential backoff).
+- Add randomness (jitter) so thousands of clients don't retry in sync.
+- Share one overall deadline across nested calls.
 
-- Where are network boundaries in the request path?
+Only retry **idempotent** operations, meaning doing them twice has the same
+effect as once. `GET /items/42` is safe to retry. `POST /payments` is not,
+unless the client sends an **idempotency key** that the server uses to ignore
+duplicates.
+
+```{warning}
+A timeout doesn't mean the server did nothing. The payment may have gone
+through and only the response was lost. That's why idempotency keys matter.
+```
+
+## Checklist
+
+- Where does the request cross the network?
 - Which calls can run in parallel?
-- What are the connection, request, and overall timeouts?
-- Which operations may be retried safely?
-- How does the system behave during packet loss, high latency, or a partial
-  regional outage?
-
+- What are the timeouts?
+- Which operations are safe to retry?
+- What happens under packet loss, high latency, or a regional outage?

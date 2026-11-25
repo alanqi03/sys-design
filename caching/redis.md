@@ -124,6 +124,54 @@ EXPIRE rate:user:42:2026-11-20T10:15 60
 
 If the count is over 100, reject the request.
 
+These are two separate commands. If the server crashes between them, the key
+never expires and the user stays blocked. The next section fixes that.
+
+### Lua scripts: several commands as one atomic step
+
+Each Redis command is atomic on its own, but a sequence of commands is not:
+another client can run in between. A **Lua script** runs entirely on the Redis
+server, and **nothing else runs until it finishes**, so the whole script acts as
+one atomic step.
+
+The rate limiter as one script:
+
+```lua
+-- KEYS[1] = rate:user:42:2026-11-20T10:15   ARGV[1] = limit   ARGV[2] = window in seconds
+local count = redis.call("INCR", KEYS[1])
+if count == 1 then
+  redis.call("EXPIRE", KEYS[1], ARGV[2])   -- set the expiry on the first request only
+end
+if count > tonumber(ARGV[1]) then
+  return 0                                  -- over the limit: reject
+end
+return 1                                    -- allowed
+```
+
+```python
+rate_limit = redis.register_script(LUA_SOURCE)
+allowed = rate_limit(keys=["rate:user:42:2026-11-20T10:15"], args=[100, 60])
+```
+
+Scripts are also how you safely release a [distributed lock](#distributed-locks),
+which needs "delete the key only if it still holds my token":
+
+```lua
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+  return redis.call("DEL", KEYS[1])
+end
+return 0
+```
+
+Rules of thumb:
+
+- **Keep scripts short.** A slow script blocks every other client on that shard.
+- **Pass every key in `KEYS`.** In Redis Cluster, all of a script's keys must be
+  in the same hash slot (use `{braces}`).
+- **Use `MULTI`/`EXEC`** when you just need to run fixed commands together.
+  Use a script when a later step depends on an earlier result, like "only set
+  the expiry if the count is 1."
+
 ### Pub/Sub vs. Streams
 
 - **Pub/Sub** delivers only to clients connected right now. A disconnected
@@ -143,6 +191,7 @@ If the count is over 100, reject the request.
   XACK orders:events workers <message-id>
   ```
 
+(distributed-locks)=
 ### Distributed locks
 
 ```text
@@ -150,7 +199,8 @@ SET lock:order:123 <random-token> NX PX 10000
 ```
 
 `NX` only sets the key if it doesn't exist, and `PX 10000` auto-releases it
-after 10 seconds. To release, delete the key only if it still holds your token.
+after 10 seconds. To release, delete the key only if it still holds your token,
+using the Lua script above.
 A paused process can wake up after its lock expired, so don't rely on the lock
 alone for anything irreversible like charging a card.
 

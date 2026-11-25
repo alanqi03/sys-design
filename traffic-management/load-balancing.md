@@ -5,166 +5,116 @@ description: Layer 4 versus Layer 7 load balancing, routing algorithms, health c
 
 # Load Balancing
 
-A load balancer gives clients a stable endpoint and distributes traffic across
-healthy targets. It improves capacity and availability only when the targets
-are independently useful and the load balancer itself is redundant.
+A load balancer gives clients one address and spreads their traffic across many
+servers. If a server dies, the load balancer stops sending it traffic.
 
-## Layer 4 versus Layer 7
+**Running example:** a web app with three servers behind
+`api.example.com`. Each server handles about 500 requests per second, so
+together they handle about 1,500, and losing one doesn't take the site down.
 
-“Layer 4” and “Layer 7” refer to the transport and application layers of the OSI
-model. The practical difference is how much of the traffic the load balancer
-understands.
+## Layer 4 vs. Layer 7
 
-| | Layer 4 (transport) | Layer 7 (application) |
+The difference is how much of the traffic the load balancer reads.
+
+| | Layer 4 | Layer 7 |
 | --- | --- | --- |
-| Understands | Source/destination address, port, TCP/UDP and connection state | HTTP method, host, path, headers, cookies and status |
-| Balancing unit | Connection or transport flow | HTTP request or stream, depending on protocol and implementation |
-| Routing examples | `TCP :5432` to database proxies; `UDP :53` to DNS servers | `/images` to media; `/orders` to order service |
-| Protocols | TCP, UDP, TLS passthrough and other transport traffic | Usually HTTP, HTTPS, HTTP/2, gRPC and WebSocket handshakes |
-| Advantages | Protocol agnostic, less application parsing, can preserve end-to-end TLS | Rich content routing, HTTP-aware health checks, redirects and header policy |
-| Costs | Cannot route by URL or HTTP identity | More processing, configuration and application-level failure modes |
+| Reads | IP address and port only | The HTTP request: URL, headers, cookies |
+| Can route | "Port 5432 → database proxies" | "`/images/*` → media servers, `/api/*` → API servers" |
+| Handles | Any TCP or UDP traffic | HTTP, HTTPS, gRPC, WebSockets |
+| Pros | Fast; works for any protocol; can leave TLS encryption untouched | Smart routing; HTTP-aware health checks |
+| Example | AWS Network Load Balancer | AWS Application Load Balancer, NGINX |
 
 ```{mermaid}
 flowchart TB
-  subgraph l4[Layer 4]
-    c1[Client connection] --> nlb[L4 load balancer]
-    nlb -->|TCP/UDP flow| t1[Target]
+  subgraph L4["Layer 4: sees only address and port"]
+    c1[Client] --> nlb[L4 LB]
+    nlb --> t1[Server]
   end
-  subgraph l7[Layer 7]
-    c2[HTTP client] --> alb[L7 load balancer]
-    alb -->|Host: api.example.com| api[API targets]
-    alb -->|Path: /static| static[Static targets]
+  subgraph L7["Layer 7: reads the HTTP request"]
+    c2[Client] --> alb[L7 LB]
+    alb -->|"/api/*"| api[API servers]
+    alb -->|"/images/*"| img[Media servers]
   end
 ```
 
-### Choose Layer 4 when
+**Use Layer 7** for most web apps, where you want to route by URL. **Use Layer
+4** for non-HTTP traffic (databases, game servers, DNS), very high connection
+volume, or when servers must handle TLS themselves.
 
-- the traffic is non-HTTP TCP or UDP;
-- very high connection throughput or low proxy overhead is important;
-- the backend must terminate TLS for end-to-end encryption; or
-- routing by address and port is sufficient.
+## Choosing a server
 
-### Choose Layer 7 when
+| Algorithm | How it picks | Good when |
+| --- | --- | --- |
+| Round robin | 1, 2, 3, 1, 2, 3... | Servers and requests are similar |
+| Weighted | A bigger server gets a larger share | Servers differ in size, or for canaries (5% to the new version) |
+| Least connections | The server with the fewest open connections | Requests vary in length |
+| Hash | `hash(user_id)` always picks the same server | You want a user to stick to one server, e.g. for its cache |
 
-- hosts, paths, methods, headers, or cookies determine the destination;
-- the edge should terminate TLS, redirect HTTP, or apply HTTP policy;
-- application-aware health checks are required; or
-- several HTTP services share one public endpoint.
+No algorithm can predict how expensive a request will be, so servers should
+still cap their own concurrency.
 
-Some architectures use both: a Layer 4 entry point distributes connections to
-a fleet of Layer 7 proxies. That adds another network hop, so use it only when
-the L4 features or separation of responsibilities are valuable.
+## Health checks
 
-## How a target is selected
+The load balancer calls something like `GET /health` on each server every few
+seconds. After 3 failures in a row, it stops sending that server traffic. After
+a few successes, it adds the server back.
 
-- **Round robin:** rotate evenly through healthy targets; works when requests
-  and instances have similar cost and capacity.
-- **Weighted round robin:** send more traffic to larger targets or use small
-  weights for a canary deployment.
-- **Least connections:** prefer the target with fewer open connections; useful
-  when connection durations differ, but one connection may carry many HTTP/2
-  requests.
-- **Least outstanding requests:** prefer the target with less active work; more
-  closely models request load when the proxy can observe it.
-- **Hash or consistent hash:** use a client, header, or application key to choose
-  a target; useful for affinity and distributed caches, but a hot key can create
-  an uneven target.
-- **Flow hash:** an L4 balancer commonly hashes connection properties such as
-  source/destination addresses, ports, and protocol so packets in one flow reach
-  the same target.
+Keep `/health` simple: "can this server handle requests?" Don't make it fail
+because an optional dependency is down. If every server's health check depends
+on the analytics service, an analytics outage removes *all* servers.
 
-No algorithm knows the true cost of future work. Combine a reasonable policy
-with target-side concurrency limits and load shedding.
+**Draining:** when deploying or scaling down, stop sending a server *new*
+requests, let current ones finish (say, up to 30 seconds), then shut it down.
+Long-lived connections like WebSockets need longer.
 
-## Health checks and draining
+## TLS and client IPs
 
-An **active health check** probes a target periodically. A **passive check**
-learns from real connection or request failures. Layer 4 checks can confirm that
-a port accepts a connection; Layer 7 checks can request an endpoint and verify
-an HTTP result.
+- **TLS termination:** the load balancer decrypts HTTPS, so it can read and route
+  by URL. This is the usual setup.
+- **TLS passthrough:** the load balancer forwards encrypted traffic untouched.
+  The server decrypts it. Only possible with Layer 4.
 
-Use a lightweight readiness endpoint that reflects whether the instance can
-serve new traffic. Do not include every optional dependency: a shared analytics
-outage should not remove all otherwise useful instances. Require several failed
-checks before removal and several successful checks before restoration to avoid
-flapping.
+Because the load balancer sits in the middle, servers see *its* IP address, not
+the user's. The load balancer passes the real IP in a header like
+`X-Forwarded-For`. Only trust that header when it comes from your own load
+balancer, since clients can fake it.
 
-During deployment or scale-in:
+## Sticky sessions
 
-1. mark the target unavailable for new work;
-2. allow connection and request draining for a bounded period;
-3. finish, hand off, or terminate remaining work safely; and
-4. stop the target.
+Sticky sessions send the same user to the same server every time, usually via a
+cookie. They help apps that keep session data in server memory, but load gets
+uneven, and if that server dies the user's session is lost.
 
-WebSockets, SSE, uploads, and long-running requests need longer or
-protocol-aware draining. A load balancer normally cannot move an established
-connection to another target.
+Better: keep servers **stateless**. Store sessions in Redis or a signed token so
+any server can handle any request.
 
-## TLS and client identity
-
-With **TLS termination**, the load balancer decrypts traffic, can inspect HTTP,
-and may open a new TLS connection to the backend. With **TLS passthrough**, the
-backend owns the certificate and encryption remains end to end, but the
-balancer cannot inspect HTTP content.
-
-When a proxy terminates a client connection, the backend's network peer is the
-proxy. Preserve the original client address using a trusted mechanism such as a
-provider feature, PROXY protocol, or sanitized forwarding header. Never trust a
-client-supplied `X-Forwarded-For` unless the trusted proxy removes or replaces
-untrusted values.
-
-## Session affinity
-
-Sticky sessions route a client to the same target using a cookie, client hash,
-or connection. They can help with a stateful legacy application, local caches,
-or long-lived connections, but they create uneven load and make target failure
-more disruptive.
-
-Prefer stateless service instances with session state in a signed token or
-shared store. If affinity is required, bound its lifetime and ensure any target
-can recover the session after failure.
-
-## Global and regional balancing
+## Global load balancing
 
 ```{mermaid}
 flowchart TD
-  users[Users] --> global[DNS / anycast / global traffic manager]
-  global -->|Nearest healthy region| west[Regional load balancer West]
-  global -->|Nearest healthy region| east[Regional load balancer East]
-  west --> w1[Zone A targets]
-  west --> w2[Zone B targets]
-  east --> e1[Zone A targets]
-  east --> e2[Zone B targets]
+  users[Users] --> dns[Global DNS / anycast]
+  dns -->|"Users in Europe"| eu[EU load balancer]
+  dns -->|"Users in the US"| us[US load balancer]
+  eu --> eu1[EU servers]
+  us --> us1[US servers]
 ```
 
-Global routing considers region health, latency, geography, capacity, and data
-residency. Regional balancing spreads traffic across zones and instances. A
-service is not multi-region merely because traffic can reach another region;
-its data, dependencies, consistency model, and failover procedure must work
-there too.
+Global routing sends users to the nearest healthy region; each region's load
+balancer then spreads traffic across its servers. Failing over to another region
+only works if your data and dependencies also exist there.
 
-## Common failure modes
+## What goes wrong
 
-- **Retry amplification:** the load balancer, gateway, client, and service each
-  retry, multiplying one failure into many requests.
-- **Connection imbalance:** a few targets keep many long-lived connections even
-  after new targets are added.
-- **Slow targets:** a target remains technically healthy but builds a queue and
-  raises tail latency.
-- **Bad health checks:** all targets are removed because one optional shared
-  dependency fails.
-- **Uneven zones:** traffic is balanced evenly across zones with different
-  healthy capacity.
-- **Hidden overload:** the load balancer accepts more work than backends can
-  complete, so queues and timeouts grow.
-
-Monitor healthy target count, new and active connections, requests and bytes,
-per-target distribution, rejected work, retries, backend latency, and response
-codes. Capacity-test the balancer and its configuration rather than assuming it
-is unlimited.
+- **Retry storms:** the client, load balancer, and service each retry, turning
+  one failure into many requests.
+- **Uneven long connections:** new servers get no traffic because existing
+  WebSocket connections stay on old servers.
+- **Slow but "healthy" servers:** a server passes health checks but responds
+  slowly, dragging down response times.
+- **Bad health checks:** one shared dependency fails and every server is
+  removed.
 
 ## Further reading
 
 - [Google Cloud: Layer 4 and Layer 7 load balancing](https://cloud.google.com/load-balancing/docs/load-balancing-overview)
-- [AWS: Network Load Balancer overview](https://docs.aws.amazon.com/elasticloadbalancing/latest/network/introduction.html)
 - [AWS: Elastic Load Balancing routing algorithms](https://docs.aws.amazon.com/elasticloadbalancing/latest/userguide/how-elastic-load-balancing-works.html)
