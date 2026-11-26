@@ -17,15 +17,21 @@ polling.
 
 ## Quick comparison
 
-| Choice | Communication | Best fit | Main trade-off |
-| --- | --- | --- | --- |
-| [Pub/Sub and RSS](connection-protocols/pub-sub.md) | Publishers emit updates without calling each subscriber directly | Fan-out events and syndicated web content | Delivery, replay, and freshness depend on the broker or feed reader |
-| [Polling](connection-protocols/polling.md#polling) | Client requests, server responds | Rare or delay-tolerant updates | Empty requests waste work; interval adds latency |
-| [Long polling](connection-protocols/polling.md#long-polling) | Server delays each HTTP response | Near-real-time updates with broad HTTP compatibility | Reconnect and HTTP overhead after every response |
-| [Webhooks](connection-protocols/polling.md#webhooks) | Provider calls a consumer's HTTPS endpoint | Server-to-server event notifications | Receiver must be reachable, secure, and idempotent |
-| [SSE](connection-protocols/server-sent-events.md) | Server streams text events to client | Notifications, dashboards, progress, AI text output | Server-to-client only; text format |
-| [WebSocket](connection-protocols/websockets.md) | Full-duplex messages | Chat, collaboration, multiplayer state | Stateful connections and recovery are more complex |
-| [WebRTC](connection-protocols/webrtc.md) | Peer media and/or data | Voice, video, screen sharing, peer data | Signaling, NAT traversal, relays, and group topology |
+| Choice | How it communicates | Direction | Typical delay | Best fit | Main trade-off |
+| --- | --- | --- | --- | --- | --- |
+| [Polling](connection-protocols/polling.md#polling) | Client sends a new request on a timer (say, every 5 s); server answers right away, even if nothing changed | Client asks, server answers | Up to one interval | Job status, delay-tolerant dashboards | Most requests come back empty; constant load even when idle |
+| [Long polling](connection-protocols/polling.md#long-polling) | Client sends a request; server holds it open until there's news or a timeout, then the client immediately asks again | Server → client (client sends commands as normal requests) | Near real time | Live updates where SSE or WebSockets aren't available | A new request after every response; many open requests waiting on the server |
+| [SSE](connection-protocols/server-sent-events.md) | Client opens one HTTP connection; server keeps it open and streams text events down it. The browser reconnects on its own | Server → client only | Real time | Notifications, live scores, progress, AI text streaming | One way only; text only; one open connection per client |
+| [WebSocket](connection-protocols/websockets.md) | One HTTP handshake upgrades to a persistent connection; either side sends messages at any time | Both ways | Real time | Chat, collaborative editing, multiplayer games | Stateful servers; you design the message format, heartbeats, and reconnects |
+| [WebRTC](connection-protocols/webrtc.md) | Peers swap connection details through a signaling server, then send audio, video, or data directly to each other, usually over UDP | Peer ↔ peer | Lowest (built for live media) | Voice, video, screen sharing | Signaling, NAT traversal, TURN relays; hard to scale to large groups |
+| [Webhooks](connection-protocols/polling.md#webhooks) | When an event happens, the provider sends an HTTP `POST` to a URL you registered | Server → server | Seconds | Payments, GitHub events, finished third-party jobs | Your endpoint must be public, verify signatures, and handle retries and duplicates |
+| [Pub/Sub](connection-protocols/pub-sub.md) | A publisher sends a message to a topic; the broker delivers a copy to every subscriber | One service → many services | Milliseconds to seconds | Fanning out events between backend services | Another system to run; duplicates and missed messages depend on the broker |
+| [RSS](connection-protocols/pub-sub.md#how-rss-fits) | The site updates a feed file; readers fetch it on a timer (really polling) | Reader asks, site answers | Up to one poll interval (often minutes) | Blogs, podcasts, changelogs | Slow, and the publisher doesn't know who's subscribed |
+
+Polling, long polling, SSE, WebSocket, and WebRTC carry updates **to a client**
+(a browser or app). Webhooks and Pub/Sub usually move updates **between
+servers**. A common setup is Pub/Sub between your services, then SSE or
+WebSockets for the last hop to the browser.
 
 ## Choosing a client connection
 

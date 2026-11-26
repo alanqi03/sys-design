@@ -1,198 +1,170 @@
 ---
 title: Multi-step Processes
-description: An ELI18 guide to reliable multi-step workflows, sagas, Temporal, and AWS Step Functions.
+description: A plain-language guide to reliable multi-step workflows, sagas, Temporal, and AWS Step Functions.
 ---
 
 # Multi-step Processes
 
-A **multi-step process** is one user goal that requires several pieces of work.
-Checking out might create an order, reserve inventory, charge a card, book a
-shipment, and send a confirmation. Customer onboarding, insurance claims,
-video processing, and data pipelines have the same shape.
+A **multi-step process** is one user goal that takes several steps across
+services.
 
-The happy path is easy to draw:
+**Running example:** checkout.
 
 ```text
-Do A -> Do B -> Do C -> Done
+Create order → Reserve inventory → Charge card → Book shipment → Done
 ```
 
-The real design problem is remembering progress and deciding what to do when a
-process, service, or machine fails halfway through.
+The happy path is easy. The hard part is **what happens when something fails
+halfway**.
 
-## Why a normal request chain is fragile
+## Why a simple chain of calls breaks
 
-Imagine an API calling each service in order:
+If one API call runs each step in turn:
 
-```{mermaid}
-flowchart LR
-  client[Client] --> orders[Create order]
-  orders --> inventory[Reserve inventory]
-  inventory --> payment[Charge payment]
-  payment --> shipping[Book shipment]
-```
+- The card is charged, then the server crashes before saving that fact. Did the
+  customer pay?
+- Shipping is down after the card was already charged.
+- A timeout leaves you unsure whether the charge happened, and a retry charges
+  twice.
+- A step waits hours for a human approval while servers restart.
 
-Several awkward cases appear:
+The fix: **save progress after each step**, and make every step safe to retry.
 
-- Payment succeeds, but the process crashes before recording the result.
-- Shipping is unavailable after inventory and payment have succeeded.
-- A timeout leaves the caller unsure whether an operation happened.
-- A retry performs the same charge twice.
-- A process waits hours for a human approval while servers restart or deploy.
+## Pick the simplest option that works
 
-Do not hold one database transaction or HTTP request open across a long-running
-distributed process. Persist the workflow's state between steps and make every
-external action safe to retry.
-
-## Start with the smallest reliable option
-
-| Situation | Good starting point |
+| Situation | Start with |
 | --- | --- |
-| Every change is in one database | One short ACID transaction |
-| A few asynchronous steps with simple branching | A queue plus a workflow-status table |
-| Many steps, retries, timers, branches, or human approvals | A durable workflow engine |
-| Several services commit independently and earlier work may need undoing | A saga, often run by a workflow engine |
+| Everything is in one database | One transaction |
+| A few background steps | A queue plus a `status` column |
+| Many steps, retries, timers, or human approvals | A workflow engine (Temporal, Step Functions) |
+| Earlier steps may need undoing | A saga, usually run by a workflow engine |
 
-A workflow engine is not automatically necessary. It earns its place when the
-recovery logic would otherwise become a home-grown collection of status rows,
-queues, timers, retry loops, and repair scripts.
+## Sagas: undoing completed steps
 
-## Sagas: undo the business effect
+A **saga** pairs each step with a **compensating action** that undoes it. If a
+later step fails for good, run the compensations backward.
 
-In software, a **saga** is a sequence of local steps. Each step that may need to
-be undone has a matching **compensating action**. Run the steps in order; if a
-later step fails permanently, walk backward and compensate for the work that
-already succeeded.
-
-| Forward step | Compensating action |
+| Step | Compensation |
 | --- | --- |
-| Create pending order | Mark order canceled |
+| Create pending order | Cancel order |
 | Reserve inventory | Release inventory |
-| Charge payment | Issue refund |
-| Book shipment | Cancel shipment if it has not left |
+| Charge card | Refund |
+| Book shipment | Cancel shipment |
 
 ```{mermaid}
 flowchart LR
-  a[Create pending order] --> b[Reserve inventory]
-  b --> c[Charge payment]
+  a[Create order] --> b[Reserve inventory]
+  b --> c[Charge card]
   c --> d[Book shipment]
-  d -->|Success| done[Confirm order]
-  d -->|Permanent failure| u3[Refund payment]
-  u3 --> u2[Release inventory]
-  u2 --> u1[Cancel order]
+  d -->|success| done[Confirm order]
+  d -->|"fails for good"| r[Refund]
+  r --> rel[Release inventory]
+  rel --> cancel[Cancel order]
 ```
 
-### Compensation is not time travel
+Compensation isn't a rollback. A refund is a new transaction, and a sent email
+can't be unsent. It returns things to an acceptable state, not the exact past.
+Compensations can fail too, so they need retries as well.
 
-A database rollback can erase uncommitted changes. A saga cannot erase facts
-that other systems have already observed. A refund is a new transaction, an
-email cannot be unsent, and a parcel that has shipped may require a return.
-Compensation restores an acceptable business state rather than recreating the
-exact past.
+**Who runs the steps?**
 
-Compensations can also fail, so they need retries, idempotency, monitoring, and
-sometimes a manual-repair path. Record which forward and compensating steps
-succeeded.
+- **Orchestration:** one coordinator tells each service what to do next. Easy
+  to follow and change. Usually the better choice.
+- **Choreography:** each service reacts to the previous service's event, with no
+  coordinator. Fewer central pieces, but the overall flow is hard to see.
 
-### Who decides the next step?
+To reliably save data *and* publish the event that triggers the next step, use
+a [transactional outbox](./database/change-data-capture-outbox.md).
 
-- **Orchestration:** one coordinator tells each participant what to do next.
-  The full path is easier to see and change, but the coordinator becomes an
-  important dependency. Temporal and AWS Step Functions commonly fill this role.
-- **Choreography:** services react to one another's events without a central
-  coordinator. This can reduce central coupling, but a long process becomes
-  harder to understand, debug, and change.
+## Durable execution
 
-For a workflow with several branches or compensations, orchestration is usually
-the clearer starting point. Use a [transactional outbox](./database/change-data-capture-outbox.md)
-when a service must reliably commit local data and publish the event that moves
-the process forward.
-
-## Durable execution, ELI18
-
-A **durable execution engine** is like a coordinator that writes down every
-completed step before moving on. If the coordinator or worker crashes, another
-one reads the durable history and continues from the recorded point instead of
-starting the entire process from memory.
+A **workflow engine** writes down each completed step. If a worker crashes,
+another one reads that history and continues where it left off, instead of
+starting over.
 
 ```{mermaid}
 flowchart LR
-  app[Application] --> engine[(Workflow engine<br/>state and history)]
-  engine --> tasks[[Task queue]]
-  tasks --> workers[Workers]
-  workers --> services[Databases and services]
-  workers -->|Result| engine
+  app[App] --> engine[("Workflow engine<br/>saves every step")]
+  engine --> workers[Workers]
+  workers --> services[Payment, inventory, ...]
+  workers -->|result| engine
 ```
 
-The engine normally owns workflow state, timers, retries, and branching.
-Workers perform the real side effects. Since a worker can finish its action and
-crash before reporting success, those actions still need idempotency keys or
-deduplication; durable execution does not make arbitrary side effects
-exactly-once.
+A worker can still finish a step and crash before reporting it, so the step runs
+again. Steps still need idempotency keys; for example, pass the order ID to the
+payment provider so a retry doesn't charge twice.
 
-## Temporal, ELI18
+## Temporal
 
-[Temporal](https://docs.temporal.io/) lets developers express a workflow in
-application code while the Temporal service durably stores its event history.
-If a worker disappears, Temporal can reconstruct the workflow's state from that
-history and schedule the unfinished work again.
+You write the workflow as ordinary code:
 
-The two main concepts are:
+```python
+T = timedelta(seconds=30)   # max time per attempt
 
-- A **Workflow** contains the sequence, branches, timers, and decisions. Its
-  code must be deterministic so replaying the same history reaches the same
-  decision.
-- An **Activity** performs an external action such as calling a payment API or
-  writing to a database. Activities can be retried and should be idempotent.
+@workflow.defn
+class Checkout:
+    @workflow.run
+    async def run(self, order_id: str):
+        await workflow.execute_activity(reserve_inventory, order_id, start_to_close_timeout=T)
+        try:
+            await workflow.execute_activity(charge_card, order_id, start_to_close_timeout=T)
+        except ActivityError:
+            await workflow.execute_activity(release_inventory, order_id, start_to_close_timeout=T)
+            raise
+        await workflow.execute_activity(book_shipment, order_id, start_to_close_timeout=T)
+```
 
-Temporal is a good fit when workflows live naturally in application code, may
-run for minutes to months, or need rich control flow and durable timers. The
-trade-off is operating or buying another platform, learning its programming
-model, and safely versioning workflow code that may have old executions still
-running.
+- A **Workflow** is the sequence of steps and decisions. It must be
+  deterministic, because Temporal rebuilds it by replaying its history.
+- An **Activity** does real work, such as calling the payment API. Activities are
+  retried automatically and should be idempotent.
 
-## AWS Step Functions, ELI18
+**Good for:** complex logic in code; workflows that run for minutes to months.
+**Cost:** another system to run (or pay for), and care when changing code while
+old workflows are still running.
 
-[AWS Step Functions](https://docs.aws.amazon.com/step-functions/latest/dg/welcome.html)
-is a managed AWS workflow service. You define a **state machine**: a diagram-like
-set of task, choice, wait, parallel, and map states. AWS stores each execution's
-state and moves it to the next state.
+## AWS Step Functions
 
-A task can invoke Lambda, run an ECS or Batch job, call AWS service APIs, make
-an HTTPS request, or wait for an external callback. `Retry` handles temporary
-failures; `Catch` routes a permanent failure to a fallback or compensation
-path.
+You define a **state machine** in JSON or a visual editor: steps, choices,
+waits, and parallel branches. AWS runs it and tracks each execution.
 
-Step Functions is a good fit when the system already runs on AWS, visual state
-machines help operators understand the flow, or the workflow coordinates many
-AWS services. The trade-offs are AWS-specific definitions and permissions,
-service quotas and pricing, and state-machine data transformations that can
-become cumbersome for code-heavy business logic.
+```json
+"ChargeCard": {
+  "Type": "Task",
+  "Resource": "arn:aws:lambda:...:charge-card",
+  "Retry": [{ "ErrorEquals": ["States.Timeout"], "MaxAttempts": 3 }],
+  "Catch": [{ "ErrorEquals": ["States.ALL"], "Next": "ReleaseInventory" }],
+  "Next": "BookShipment"
+}
+```
 
-## Temporal versus Step Functions
+`Retry` handles temporary failures; `Catch` routes permanent ones to a
+compensation step.
 
-| Question | Temporal | AWS Step Functions |
+**Good for:** systems already on AWS that tie together Lambda, ECS, and other
+AWS services, especially when a visual diagram helps. **Cost:** AWS-only, and
+complex logic gets awkward in JSON.
+
+## Temporal vs. Step Functions
+
+| | Temporal | Step Functions |
 | --- | --- | --- |
-| How is the flow written? | Workflow code using a supported SDK | Amazon States Language or Workflow Studio |
-| Where does work run? | Your workers execute Activities | AWS integrations, Lambda, containers, HTTP APIs, or external workers |
-| Who operates the engine? | Self-host Temporal or use Temporal Cloud | AWS operates the service |
-| Natural fit | Code-heavy, long-running application workflows | AWS service orchestration and visibly modeled state machines |
-| Main learning cost | Deterministic workflow code, replay, workers, versioning | State definitions, data mapping, IAM, quotas, and workflow types |
+| Written as | Code (Go, Java, Python, TypeScript...) | JSON or a visual editor |
+| Runs on | Your workers | AWS (Lambda, ECS, service calls) |
+| Operated by | You, or Temporal Cloud | AWS |
+| Best for | Complex, long-running app logic | Wiring AWS services together |
 
-Both can orchestrate a saga. A saga is the **business recovery pattern**;
-Temporal and Step Functions are **tools that can remember and execute the
-pattern reliably**.
+A saga is the **pattern**; Temporal and Step Functions are **tools** that run it
+reliably.
 
-## Design checklist
+## Checklist
 
-For every multi-step process, write down:
-
-- The durable workflow ID and current business status.
-- The timeout, retry policy, and idempotency key for each step.
-- Which errors are temporary, which are permanent, and which need a person.
-- The compensation for every completed step that may need to be reversed.
-- What the client sees while work is pending, succeeds, fails, or is canceled.
-- How operators inspect history, retry safely, and repair a stuck execution.
-- How changes remain compatible with workflows that started on older code.
+- What's the workflow ID and current status?
+- What's the timeout, retry policy, and idempotency key for each step?
+- Which errors are temporary, which are permanent, and which need a human?
+- What's the compensation for each step?
+- What does the user see while it's pending, done, or failed?
+- How do operators find and fix a stuck workflow?
 
 ## Further reading
 
@@ -200,4 +172,3 @@ For every multi-step process, write down:
 - [Temporal documentation](https://docs.temporal.io/)
 - [AWS Step Functions state machines](https://docs.aws.amazon.com/step-functions/latest/dg/concepts-statemachines.html)
 - [AWS Step Functions error handling](https://docs.aws.amazon.com/step-functions/latest/dg/concepts-error-handling.html)
-- [AWS Step Functions service integrations](https://docs.aws.amazon.com/step-functions/latest/dg/integrate-services.html)

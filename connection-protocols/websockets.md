@@ -5,256 +5,145 @@ description: Full-duplex persistent connections for interactive messaging, with 
 
 # WebSockets
 
-WebSocket provides a persistent, full-duplex channel: client and server can send
-messages independently at any time. A handshake establishes the channel, then
-text, binary, and control frames flow without a complete HTTP request around
-every application message.
+A WebSocket is a long-lived, two-way connection. After one HTTP handshake,
+client and server can each send messages at any time, without a new HTTP
+request for every message.
+
+**Running example:** a group chat app.
 
 ## How it works
 
 ```{mermaid}
 sequenceDiagram
   participant B as Browser
-  participant S as WebSocket server
-  B->>S: HTTP opening handshake
+  participant S as Chat server
+  B->>S: HTTP handshake (Upgrade: websocket)
   S-->>B: 101 Switching Protocols
-  B->>S: {type: "chat.send", text: "Hello"}
-  S-->>B: {type: "chat.accepted", id: "msg_42"}
-  S-->>B: {type: "presence.changed", online: 18}
-  Note over B,S: Either side may send until close
+  B->>S: sendMessage "Hello"
+  S-->>B: commandResult ok
+  S-->>B: newMessage from Bob
+  S-->>B: typingUpdate: Carol is typing
+  Note over B,S: either side sends until close
 ```
 
 ```javascript
-const socket = new WebSocket("wss://api.example.com/realtime");
+const socket = new WebSocket("wss://chat.example.com/ws");   // wss = encrypted
 
-socket.addEventListener("open", () => {
-  socket.send(JSON.stringify({
-    type: "room.join",
-    requestId: crypto.randomUUID(),
-    roomId: "system-design"
-  }));
-});
+socket.onopen = () =>
+  socket.send(JSON.stringify({ type: "joinChat", requestId: "req_1", payload: { chatId: "chat_abc" } }));
 
-socket.addEventListener("message", event => {
-  routeMessage(JSON.parse(event.data));
-});
+socket.onmessage = event => handle(JSON.parse(event.data));
 ```
 
-Use `wss://` in production so the channel is protected by TLS. Define an
-application envelope with a message type, schema version, request or event ID,
-and payload. WebSocket supplies transport, not the business message format.
+## API design
 
-## API Design
+A WebSocket is just a pipe; you define the messages that go through it. For a
+chat app on a whiteboard:
 
-WebSocket gives the application a two-way pipe, but it does not define the
-messages inside that pipe. For a system-design whiteboard, list the commands the
-client may send and the messages the server may send back.
+| Client → server (commands) | Server → client (results and events) |
+| --- | --- |
+| `createChat` | `commandResult`: reply to a command |
+| `sendMessage` | `newMessage`: someone posted |
+| `markMessagesRead` | `messageRead` |
+| `startTyping` / `stopTyping` | `typingUpdate` |
+| | `error` |
 
-### Chat API whiteboard
+Events like `newMessage` can arrive at any time, because they're caused by
+*other* users.
 
-**Commands sent from client to server:**
+### Sending a message
 
-- `createChat`
-- `sendMessage`
-- `updateChat`
-- `markMessagesRead`
-- `startTyping`
-- `stopTyping`
-
-**Commands received from server:**
-
-- `newMessage`
-- `chatUpdate`
-- `messageRead`
-- `typingUpdate`
-- `commandResult`
-- `error`
-
-More precisely, the client sends **commands** asking for a change, while the
-server usually sends **results** and **events** describing what happened. An
-event such as `newMessage` may arrive without the current client requesting it
-because another participant sent the message.
-
-```{mermaid}
-sequenceDiagram
-  participant A as Client A
-  participant S as Chat server
-  participant B as Client B
-
-  A->>S: sendMessage command with requestId
-  S-->>A: commandResult with same requestId
-  S-->>A: newMessage event
-  S-->>B: newMessage event
-```
-
-### Use a consistent envelope
-
-Every message should identify its type and carry an ID. A `requestId` connects
-a command to its result; an `eventId` lets clients deduplicate pushed events.
+The client sends a command with a `requestId`:
 
 ```json
 {
   "type": "sendMessage",
-  "version": 1,
-  "requestId": "req_123",
-  "payload": {}
-}
-```
-
-### `createChat` request and result
-
-```json
-{
-  "type": "createChat",
-  "version": 1,
-  "requestId": "req_123",
-  "payload": {
-    "participants": ["user_42", "user_99"],
-    "name": "System Design Study Group"
-  }
-}
-```
-
-```json
-{
-  "type": "commandResult",
-  "version": 1,
-  "requestId": "req_123",
-  "payload": {
-    "ok": true,
-    "chatId": "chat_abc"
-  }
-}
-```
-
-The matching `requestId` tells the client which pending command completed.
-Other chat participants may separately receive a `chatUpdate` event.
-
-### `sendMessage` request, result, and event
-
-```json
-{
-  "type": "sendMessage",
-  "version": 1,
   "requestId": "req_456",
-  "payload": {
-    "chatId": "chat_abc",
-    "clientMessageId": "client_msg_789",
-    "text": "Are we still meeting at 6?"
-  }
+  "payload": { "chatId": "chat_abc", "clientMessageId": "cm_789", "text": "Still meeting at 6?" }
 }
 ```
+
+The server saves it and replies with the same `requestId`, so the client knows
+which command finished:
 
 ```json
-{
-  "type": "commandResult",
-  "version": 1,
-  "requestId": "req_456",
-  "payload": {
-    "ok": true,
-    "messageId": "msg_101",
-    "createdAt": "2026-09-10T19:30:00Z"
-  }
-}
+{ "type": "commandResult", "requestId": "req_456", "payload": { "ok": true, "messageId": "msg_101" } }
 ```
 
-After saving the message, the server pushes the resulting event to every
-connected participant:
+Then it pushes an event to everyone in the chat:
 
 ```json
 {
   "type": "newMessage",
-  "version": 1,
   "eventId": "event_555",
-  "payload": {
-    "chatId": "chat_abc",
-    "messageId": "msg_101",
-    "senderId": "user_42",
-    "text": "Are we still meeting at 6?",
-    "createdAt": "2026-09-10T19:30:00Z"
-  }
+  "payload": { "chatId": "chat_abc", "messageId": "msg_101", "senderId": "user_42", "text": "Still meeting at 6?" }
 }
 ```
 
-`clientMessageId` is an idempotency key generated before sending. If the client
-reconnects and retries because it missed the result, the server can return the
-original saved message instead of creating a duplicate.
-
-### Error result
-
-A WebSocket message does not receive an HTTP status code such as `400` or
-`500`, so define application error codes explicitly:
-
-```json
-{
-  "type": "commandResult",
-  "version": 1,
-  "requestId": "req_456",
-  "payload": {
-    "ok": false,
-    "error": {
-      "code": "CHAT_NOT_FOUND",
-      "message": "The chat does not exist or is not accessible."
-    }
-  }
-}
+```{mermaid}
+sequenceDiagram
+  participant A as Alice
+  participant S as Server
+  participant B as Bob
+  A->>S: sendMessage (req_456)
+  S-->>A: commandResult (req_456)
+  S-->>A: newMessage
+  S-->>B: newMessage
 ```
 
-Keep the whiteboard contract small: define commands and events, their payloads,
-how results correlate to commands, idempotency, authorization, ordering, and
-what the client does after reconnecting.
+- **`clientMessageId`** is an idempotency key. If Alice's connection drops and
+  she resends, the server returns the existing message instead of posting it
+  twice.
+- **`eventId`** lets clients skip events they've already seen.
+- **Errors:** there are no HTTP status codes here, so define your own:
 
-## Good use cases
+  ```json
+  { "type": "commandResult", "requestId": "req_456",
+    "payload": { "ok": false, "error": { "code": "CHAT_NOT_FOUND" } } }
+  ```
 
-- chat, presence, typing indicators, and multiplayer games;
-- collaborative editors and shared cursors;
-- interactive control or telemetry where both sides send frequently; and
-- subscriptions in which clients dynamically join and leave many topics.
+## When to use WebSockets
 
-For one-way browser notifications, [SSE](server-sent-events.md) is often simpler.
-For voice or video, use [WebRTC](webrtc.md); sending live media through a browser
-WebSocket misses WebRTC's congestion control and media pipeline.
+- Chat, presence, and typing indicators
+- Multiplayer games
+- Collaborative editing and shared cursors
 
-## Connection lifecycle
+For one-way updates (notifications, dashboards), [SSE](server-sent-events.md)
+is simpler. For voice and video, use [WebRTC](webrtc.md).
 
-A socket can silently die when a device sleeps, changes networks, or passes
-through an idle proxy. Design for:
+## Handling disconnects
 
-- authentication during or immediately after connection establishment;
-- heartbeats and deadlines that detect half-open connections;
-- exponential backoff with jitter when reconnecting;
-- resubscription and state resynchronization after reconnect; and
-- stable message IDs so retried commands and replayed events can be deduplicated.
+Connections die silently when a phone sleeps or switches from Wi-Fi to cellular.
+Plan for it:
 
-WebSocket preserves frame order within one connection. Reconnection, multiple
-servers, and backend event sources require application-level ordering and
-recovery rules.
+- **Heartbeats:** ping every ~30 seconds to detect dead connections.
+- **Reconnect with backoff and jitter:** 1 s, 2 s, 4 s... so a server restart
+  doesn't cause every client to reconnect at the same instant.
+- **Catch up on reconnect:** rejoin chats and fetch messages since the last one
+  received.
+- **Authenticate** when the connection opens.
 
-## Scaling servers
+## Scaling
 
-Long-lived connections make connection servers stateful even when business
-services are stateless. A common layout separates socket management from domain
-processing:
+Each connection stays on one server, so the servers become stateful. Alice and
+Bob may be in the same chat but on different servers:
 
 ```{mermaid}
 flowchart LR
-  clients[Connected clients] --> lb[Load balancer]
-  lb --> s1[Server 1]
-  lb --> s2[Server 2]
-  s1 <--> bus[(Pub/sub or event bus)]
+  clients[Clients] --> lb[Load balancer]
+  lb --> s1[Server 1: Alice]
+  lb --> s2[Server 2: Bob]
+  s1 <--> bus[(Redis Pub/Sub)]
   s2 <--> bus
-  bus <--> services[Application services]
 ```
 
-The server maps users and subscriptions to connections; the shared bus routes
-events to whichever server currently owns each connection. Measure concurrent
-connections, reconnect rate, messages and bytes per second, send-buffer size,
-and event-loop delay. Enforce a bounded outbound buffer so one slow client
-cannot consume unbounded memory.
+When Alice sends a message, server 1 publishes it to the chat's channel, and
+server 2 receives it and pushes it to Bob. See
+[Managing Connections](../connection-protocols.md#managing-connections) for
+the full pattern.
 
-See [Managing Connections](../connection-protocols.md#managing-connections) for
-an example of optional consistent-hash routing and Redis Pub/Sub across a
-server fleet.
+Watch open connections, reconnect rate, and messages per second. Cap each
+client's outgoing buffer so one slow phone can't use up a server's memory.
 
 ## Further reading
 

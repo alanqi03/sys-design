@@ -5,204 +5,137 @@ description: Polling, long polling, and webhooks for learning when remote state 
 
 # Polling and Webhooks
 
-Polling and webhooks solve the same basic problem: **How does one system learn
-that something changed in another system?** The main difference is who starts
-the request.
+All three answer the same question: **how does one system find out that
+something changed in another?** The difference is who starts the request.
 
-| Pattern | Who starts the update request? | Best fit |
-| --- | --- | --- |
-| Polling | Receiver asks repeatedly | Simple or delay-tolerant updates |
-| Long polling | Receiver asks; provider waits to answer | Near-real-time client updates over ordinary HTTP |
-| Webhook | Provider calls the receiver | Server-to-server event notifications |
+| Pattern | Who sends the request, and when | When the answer comes | Example |
+| --- | --- | --- | --- |
+| Polling | The client, every N seconds | Right away, even if nothing changed | A browser asks "is my report ready?" every 5 s |
+| Long polling | The client, again right after each answer | Only when there's news, or after a timeout (~30 s) | A browser waits for the next chat message |
+| Webhook | The provider, when the event happens | No waiting: the request *is* the news | Stripe calls your server when a payment succeeds |
 
 ## Polling
 
-Polling asks an API for current state on a schedule. Every request receives a
-prompt response, even when nothing changed.
+Ask for the current state on a schedule. The server answers immediately, even
+if nothing changed.
 
 ```{mermaid}
 sequenceDiagram
   participant B as Browser
   participant A as API
   B->>A: GET /jobs/job_123
-  A-->>B: 200 status is processing
-  Note over B: Wait 5 seconds
+  A-->>B: status: processing
+  Note over B: wait 5 s
   B->>A: GET /jobs/job_123
-  A-->>B: 200 status is complete
-  Note over B: Stop polling
+  A-->>B: status: complete
 ```
-
-A browser can poll while a job remains unfinished:
 
 ```javascript
 async function waitForJob(jobId) {
   while (true) {
-    const response = await fetch(`/api/jobs/${jobId}`);
-    const job = await response.json();
-
+    const job = await (await fetch(`/api/jobs/${jobId}`)).json();
     if (job.status === "complete" || job.status === "failed") return job;
-    await new Promise(resolve => setTimeout(resolve, 5000));
+    await new Promise(r => setTimeout(r, 5000));
   }
 }
 ```
 
-Polling fits report generation, payment settlement, import progress, and
-dashboards that tolerate slightly stale data.
-
-### Choosing the interval
-
-The interval trades freshness for server load. With a 10-second interval, an
-update is noticed after about 5 seconds on average and almost 10 seconds in the
-worst case:
+**The trade-off is freshness vs. load.** With a 10-second interval, updates show
+up about 5 seconds late on average. And the load is constant even when nothing
+changes:
 
 ```text
-100,000 active clients / 10 seconds = 10,000 requests per second
+100,000 open pages ÷ 10 s = 10,000 requests/second
 ```
 
-That load exists even when nothing changes. Stop after a terminal state or when
-the page becomes hidden. Add jitter so clients do not all poll on the same
-clock boundary, and use exponential backoff after failures.
+Tips:
 
-### Avoid downloading unchanged data
+- Stop polling when the job is done or the tab is hidden.
+- Add random jitter so clients don't all poll at the same moment.
+- Use `ETag` / `If-None-Match` so unchanged responses come back as a tiny
+  `304 Not Modified`.
 
-The server can return an `ETag`. The next request sends `If-None-Match`; if the
-resource is unchanged, the server returns `304 Not Modified` without a response
-body. This saves bandwidth, although the request still reaches the server.
-
-```http
-GET /api/jobs/job_123 HTTP/1.1
-If-None-Match: "status-v7"
-```
-
-Use polling when simplicity matters more than immediate delivery. Use long
-polling or [SSE](server-sent-events.md) when short intervals create too much
-empty traffic.
+**Use it for** report generation, import progress, and dashboards where a few
+seconds' delay is fine.
 
 ## Long Polling
 
-Long polling starts like polling, but the server does not immediately return an
-empty answer. It holds the request until data is available or a timeout is
-reached. After every response, the client opens the next request immediately.
+The client asks, and the server **holds the request open** until there's news
+or a timeout (say, 30 seconds). As soon as a response arrives, the client asks
+again.
 
 ```{mermaid}
 sequenceDiagram
   participant B as Browser
   participant A as API
-  B->>A: GET /events after cursor 41
-  Note over A: Hold request until an event exists
-  A-->>B: 200 event 42 OrderShipped
-  B->>A: GET /events after cursor 42
-  Note over A: No event before timeout
+  B->>A: GET /events?after=41
+  Note over A: waits...
+  A-->>B: event 42: OrderShipped
+  B->>A: GET /events?after=42
+  Note over A: 30 s, nothing new
   A-->>B: 204 No Content
-  B->>A: Reconnect after cursor 42
+  B->>A: GET /events?after=42
 ```
 
-The client keeps one request outstanding:
+The `after=42` cursor means a reconnecting client never misses or repeats an
+event.
 
-```javascript
-let cursor = 0;
+- The server needs async I/O, so thousands of waiting requests don't each hold
+  a thread.
+- Time out before your load balancer's idle timeout.
+- Only server-to-client: the client sends commands with normal requests.
 
-async function receiveEvents() {
-  while (true) {
-    try {
-      const response = await fetch(`/api/events?after=${cursor}`);
-      if (response.status === 204) continue;
-
-      const event = await response.json();
-      render(event);
-      cursor = event.id;
-    } catch {
-      await new Promise(resolve => setTimeout(resolve, 1000));
-    }
-  }
-}
-```
-
-### Server and delivery design
-
-- Use asynchronous I/O instead of blocking one operating-system thread per
-  waiting client.
-- Return before the shortest proxy or load-balancer idle timeout, then let the
-  client reconnect.
-- Include a cursor or event ID so reconnecting clients can request missed
-  events and deduplicate repeats.
-- Retain enough event history to fill a temporary connection gap.
-- Add jittered backoff so an outage does not create a reconnect storm.
-
-Long polling is server-to-client only; client commands still use separate HTTP
-requests. Choose it when an environment cannot reliably use streaming responses
-or WebSockets. Prefer SSE for a modern one-way browser feed and WebSocket when
-both sides exchange frequent messages.
+**Use it** when you need near-real-time updates but can't use SSE or
+WebSockets. Otherwise prefer [SSE](server-sent-events.md) for one-way updates.
 
 ## Webhooks
 
-A webhook is a **server-to-server HTTP callback**. Instead of your service
-asking a provider “Did anything change?”, you give the provider an HTTPS URL
-and choose events. When one happens, the provider sends an HTTP request to that
-URL.
+A webhook flips the direction: you give the provider a URL, and it calls you
+when something happens.
 
-For example, a payment provider can call
-`POST https://shop.example.com/webhooks/payments` after a payment succeeds.
+**Example:** you register `https://shop.example.com/webhooks/payments` with your
+payment provider. When a payment succeeds, it sends:
+
+```http
+POST /webhooks/payments
+Webhook-Id: evt_8472
+Webhook-Timestamp: 1788658200
+Webhook-Signature: v1=5d41...
+
+{"type": "payment.succeeded", "orderId": "order_123"}
+```
 
 ```{mermaid}
 sequenceDiagram
-  participant C as Consumer endpoint
   participant P as Payment provider
-  participant Q as Durable queue
+  participant C as Your endpoint
+  participant Q as Queue
   participant W as Worker
-  C->>P: Register HTTPS callback and event types
-  Note over P: Payment succeeds
-  P->>C: POST event payload and signature
-  C->>C: Verify signature and event ID
-  C->>Q: Store event for processing
-  C-->>P: 202 Accepted
-  Q-->>W: Deliver event
-  W->>W: Update order and send receipt
-```
-
-A delivery might look like:
-
-```http
-POST /webhooks/payments HTTP/1.1
-Content-Type: application/json
-Webhook-Id: evt_8472
-Webhook-Timestamp: 1788658200
-Webhook-Signature: v1=...
-
-{"type":"payment.succeeded","orderId":"order_123"}
+  P->>C: POST payment.succeeded
+  C->>C: verify signature, check evt_8472 not seen
+  C->>Q: enqueue
+  C-->>P: 200 OK (fast)
+  Q->>W: mark order paid, send receipt
 ```
 
 ### Receiving webhooks safely
 
-1. Read the original request body and verify its signature with the shared
-   webhook secret. Also validate the timestamp to limit replay attacks.
-2. Check the event type, schema, and tenant or account before trusting the
-   payload.
-3. Atomically record the stable event or delivery ID and enqueue the work.
-   If the ID already exists, treat the delivery as a harmless duplicate.
-4. Return a `2xx` response quickly, then perform slow work in a background
-   worker.
+1. **Verify the signature** with the shared secret, so nobody can fake a
+   "payment succeeded" call. Reject old timestamps to block replays.
+2. **Deduplicate** by `Webhook-Id`. Providers retry, so you'll get duplicates.
+3. **Respond quickly** with `2xx` and do the slow work in a background worker.
+   Otherwise the provider times out and retries.
+4. **Don't assume order.** If in doubt, fetch the latest state from the
+   provider's API.
 
-Providers often retry after a timeout or non-`2xx` response, but retry schedules
-and retention vary. Design for duplicates and out-of-order events even if the
-provider normally delivers in order. Fetch the current resource from the
-provider when an event may be stale or incomplete.
+**Use webhooks for** payments, GitHub events, and finished third-party jobs:
+server-to-server notifications.
 
-### When to use webhooks
+Many integrations use **both**: webhooks for fast updates, plus an occasional
+poll to catch any webhook that was missed.
 
-Use webhooks for payment status, source-control events, third-party account
-changes, or completed asynchronous jobs. They avoid empty polling traffic and
-can deliver quickly, but the receiver must expose a reliable HTTPS endpoint and
-secure it against forged or replayed requests.
-
-Polling remains useful when the receiver cannot accept inbound traffic, the
-provider has no webhook support, or periodic reconciliation must recover from a
-missed delivery. Many robust integrations use both: webhooks for fast updates
-and slower polling to repair gaps.
-
-### Further reading
+## Further reading
 
 - [RFC 6202: Long polling and streaming](https://www.rfc-editor.org/rfc/rfc6202.html)
-- [RFC 9110: Conditional requests](https://www.rfc-editor.org/rfc/rfc9110.html#name-conditional-requests)
 - [GitHub: Validating webhook deliveries](https://docs.github.com/en/webhooks/using-webhooks/validating-webhook-deliveries)
 - [GitHub: Best practices for webhooks](https://docs.github.com/en/webhooks/using-webhooks/best-practices-for-using-webhooks)

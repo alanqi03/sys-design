@@ -5,139 +5,70 @@ description: A guide to publish-subscribe messaging, fan-out, delivery behavior,
 
 # Pub/Sub and RSS Feeds
 
-**Publish/subscribe (Pub/Sub)** lets a sender announce that something happened
-without knowing who will use the announcement. Publishers send messages to a
-named **topic**; subscribers express interest in that topic and receive its
-messages.
+**Publish/subscribe (Pub/Sub)** lets a sender announce something without knowing
+who's listening. Publishers send messages to a **topic**; every subscriber to
+that topic gets a copy.
 
-Think of a university announcement list. The professor posts once to
-`course:system-design`; every student subscribed to that list gets a copy. The
-professor does not call every student separately, and students can join or leave
-without changing the professor's code.
-
-## How it works
+## Example: a news site
 
 ```{mermaid}
 flowchart LR
   P[News service] -->|ArticlePublished| T[Topic: articles]
-  T --> S1[Email subscription]
-  T --> S2[Search subscription]
-  T --> S3[Analytics subscription]
-  S1 --> E[Send newsletter]
-  S2 --> I[Update search index]
-  S3 --> A[Count publications]
+  T --> S1[Email service]
+  T --> S2[Search service]
+  T --> S3[Analytics service]
 ```
 
-1. The news service publishes an `ArticlePublished` message to the `articles`
-   topic.
-2. The broker copies it to each independent subscription.
-3. Email, search, and analytics process the same event at their own speed.
-4. With a durable broker, a subscriber commonly acknowledges a message after
-   processing it. An unacknowledged message may be retried.
-
-The publisher is now **decoupled** from its subscribers. Adding a translation
-service does not require redeploying the news service, and a temporary analytics
-failure does not have to block publication.
+The news service publishes once:
 
 ```json
-{
-  "eventId": "evt_8472",
-  "type": "ArticlePublished",
-  "occurredAt": "2026-09-05T17:30:00Z",
-  "articleId": "article_123"
-}
+{ "eventId": "evt_8472", "type": "ArticlePublished", "articleId": "article_123" }
 ```
 
-Publish facts that already happened—`ArticlePublished`—rather than vague
-instructions such as `DoWork`. Include a unique event ID so a subscriber can
-recognize a retry and remain idempotent.
+- Email sends a newsletter, search indexes the article, and analytics counts it,
+  each at its own pace.
+- Adding a translation service means adding one more subscriber. The news
+  service doesn't change.
+- If analytics is down, publishing still works.
 
-## Pub/Sub versus a queue
+Name events as facts (`ArticlePublished`), and include an `eventId` so
+subscribers can ignore duplicates.
 
-- A **queue** normally distributes jobs: several workers share one logical
-  subscription, and one worker handles each job.
-- **Pub/Sub** normally fans out events: each subscription gets its own copy, so
-  several systems can react independently.
+## When to use it
 
-The patterns can be combined. One topic may fan an order event out to billing
-and fulfillment subscriptions, while ten fulfillment workers compete for work
-within the fulfillment subscription.
+- `OrderPlaced` → billing, inventory, email, analytics
+- `UserUpdated` → clear caches, update search
+- Live scores → many WebSocket servers
 
-## When Pub/Sub is useful
-
-- **Order placed:** notify billing, inventory, fulfillment, and analytics.
-- **User updated:** invalidate caches and refresh a search index.
-- **Database change:** distribute a change-data-capture event to downstream
-  systems.
-- **Live scores:** publish each score update to many regional delivery servers.
-- **Notifications:** let email, push, and SMS services react independently.
-
-Pub/Sub is less attractive when the caller needs an immediate answer. A price
-lookup is usually a synchronous request; `OrderPlaced` side effects can happen
-asynchronously after the order transaction succeeds.
+Not for requests that need an immediate answer, like "what's the price?". Use a
+normal API call for those.
 
 ## Redis Pub/Sub
 
-[Redis Pub/Sub](../caching/redis.md) is the lightweight, live-broadcast version
-of this pattern. One client subscribes to a channel, and any client can publish
-a message that Redis immediately pushes to every currently connected
-subscriber.
+[Redis](../caching/redis.md) has a lightweight version:
 
 ```text
-# Subscriber
-SUBSCRIBE events:orders
-
-# Publisher
-PUBLISH events:orders '{"type":"OrderPlaced","orderId":"order_123"}'
+SUBSCRIBE events:orders                                     # subscriber
+PUBLISH events:orders '{"type":"OrderPlaced","id":"o_123"}'  # publisher
 ```
 
-Channel names are strings and commonly use colon-separated names such as
-`events:orders`; channels are separate from normal Redis keys. This is useful
-for online-presence changes, best-effort cache invalidation, or broadcasting an
-update across a fleet of WebSocket servers.
+It's **fire-and-forget**: Redis doesn't store messages. A subscriber that's
+disconnected misses them for good. That's fine for live updates between
+WebSocket servers or presence changes. If subscribers must catch up after
+downtime, use Redis Streams, Kafka, or a managed service like Google Pub/Sub or
+SNS + SQS.
 
-The key trade-off is **at-most-once delivery**: Redis does not save Pub/Sub
-messages or wait for acknowledgments. If a subscriber is disconnected or fails
-while handling a message, that message is gone. Use Redis Streams or another
-durable broker when consumers must catch up, retry, or replay history.
+## Questions to ask
 
-## Delivery questions
+- Can an offline subscriber catch up later, or are missed messages lost?
+- Can messages arrive twice? (Usually yes, so subscribers must be idempotent.)
+- Does order matter: globally, per key, or not at all?
+- What happens to messages that keep failing?
 
-Pub/Sub does not automatically mean that every message arrives once, in order,
-and forever. Decide:
+## How RSS fits
 
-- **Durable or ephemeral:** Can an offline subscriber catch up later?
-- **Delivery:** Can messages be lost, or can retries create duplicates?
-- **Ordering:** Is order global, per topic, or only per partition/key?
-- **Failure:** When are messages retried or moved to a dead-letter queue?
-- **Backpressure:** What happens when publishers are faster than subscribers?
-
-At-least-once delivery is common: a message may be delivered again when its
-acknowledgment is late or lost. Subscribers should therefore be idempotent and
-track a stable `eventId` when duplicate effects would be harmful.
-
-## How RSS feeds fit
-
-**RSS (Really Simple Syndication)** is an XML format for publishing a feed of
-web content such as articles, podcasts, or release notes. A feed has a stable
-URL, and each reader subscribes to the URLs it cares about.
-
-```{mermaid}
-flowchart LR
-  W[Website] -->|writes new entries| F[RSS feed URL]
-  R[RSS reader] -->|polls periodically| F
-  F -->|returns feed items| R
-  R --> U[Shows unread items]
-```
-
-RSS has the *idea* of publishers and subscribers, but ordinary RSS is not a
-push broker:
-
-- the website publishes by updating an XML document at a URL;
-- the reader periodically fetches that URL;
-- the reader uses an item's `guid`, link, or publication date to identify what
-  is new; and
-- the publisher usually does not know who subscribed.
+**RSS** is a subscription idea for web content: a site publishes an XML feed at
+a URL, and readers check it periodically.
 
 ```xml
 <item>
@@ -148,33 +79,31 @@ push broker:
 </item>
 ```
 
-RSS is excellent for open, interoperable content syndication: one feed can work
-with many independent readers without accounts or a vendor-specific SDK. The
-trade-off is freshness. If a reader polls every 15 minutes, an update can be
-roughly 15 minutes late. HTTP cache validators such as `ETag` and
-`Last-Modified` help avoid downloading an unchanged feed repeatedly.
+```{mermaid}
+flowchart LR
+  W[Website] -->|updates| F[Feed URL]
+  R[RSS reader] -->|"polls every 15 min"| F
+```
 
-For faster web-feed delivery, **WebSub** adds a hub. A subscriber registers a
-callback URL, the publisher tells the hub when the feed changes, and the hub
-pushes an HTTP notification to subscribers. It is closer to broker-style
-Pub/Sub, but it requires a reachable subscriber endpoint.
+It looks like Pub/Sub, but it's really **polling**: the publisher just updates a
+file, readers fetch it on a timer and use each item's `guid` to spot new ones,
+and the publisher doesn't know who's subscribed. Updates can be up to one poll
+interval late.
 
-## Choosing the delivery path
+**WebSub** adds push to feeds: a hub notifies subscribers' callback URLs when
+the feed changes.
 
-- Use a **message broker** for low-latency events between applications you
-  operate, especially when you need durable subscriptions, retries, and access
-  control.
-- Use **RSS** for public articles, podcasts, changelogs, or other content that
-  should work across independent readers and can tolerate polling delay.
-- Use **WebSub** when feed subscribers expose callbacks and need faster updates.
-- Use a broker behind the service plus **SSE or WebSocket** at the edge when
-  browsers need immediate updates; browsers usually should not connect directly
-  to an internal broker.
+## Which to use
+
+- **Between your own services:** a message broker (Kafka, SNS/SQS, Google
+  Pub/Sub).
+- **Public content** (blogs, podcasts, changelogs): RSS.
+- **To browsers:** a broker behind your servers, then SSE or WebSockets to the
+  browser. Browsers shouldn't connect to your broker directly.
 
 ## Further reading
 
 - [Google Cloud: Pub/Sub service overview](https://docs.cloud.google.com/pubsub/docs/pubsub-basics)
 - [Redis: Pub/Sub](https://redis.io/docs/latest/develop/pubsub/)
-- [Redis: Streams](https://redis.io/docs/latest/develop/data-types/streams/)
 - [RSS Advisory Board: RSS 2.0 specification](https://www.rssboard.org/rss-specification)
 - [W3C: WebSub](https://www.w3.org/TR/websub/)
