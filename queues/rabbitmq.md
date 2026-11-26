@@ -72,7 +72,8 @@ flowchart LR
 
 To survive a broker restart, you need all of:
 
-- **Quorum queues**, which replicate messages across nodes (the modern default
+- **Quorum queues**, which replicate messages across nodes using
+  [Raft](../distributed-systems/consensus.md) (the modern default
   for important data);
 - **persistent** messages; and
 - **publisher confirms**, so the producer knows RabbitMQ actually stored the

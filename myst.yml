@@ -53,6 +53,13 @@ project:
       children:
         - file: basics/networking.md
         - file: basics/encryption-vs-signing.md
+    - file: distributed-systems.md
+      children:
+        - file: distributed-systems/replication-consistency.md
+        - file: distributed-systems/quorums.md
+        - file: distributed-systems/consensus.md
+        - file: distributed-systems/vector-clocks.md
+        - file: distributed-systems/zookeeper.md
     - file: api-gateway-load-balancing.md
       children:
         - file: traffic-management/api-gateway.md

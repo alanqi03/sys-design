@@ -54,7 +54,8 @@ in Cassandra because it has no joins.
     and fails more easily during outages.
 
   If writes and reads both use `LOCAL_QUORUM` with 3 copies, every read
-  overlaps at least one copy that has the latest write.
+  overlaps at least one copy that has the latest write. See
+  [Quorums](../distributed-systems/quorums.md) for why.
 
 ### Pros
 

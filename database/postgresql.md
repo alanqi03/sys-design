@@ -170,7 +170,8 @@ COMMIT;   -- roll back instead if the first UPDATE changed 0 rows
   one. Each transaction reads the versions that match its snapshot, so readers
   and writers don't block each other. Autovacuum later removes old versions.
 - **Replication:** the primary streams WAL to replicas, which replay it and can
-  serve reads. Replicas usually lag slightly.
+  serve reads. Replicas usually lag slightly. See
+  [Replication and Consistency](../distributed-systems/replication-consistency.md).
 - **CDC:** the same WAL can be streamed as change events.
   See [CDC](./change-data-capture-outbox.md).
 

@@ -21,8 +21,11 @@ Each chapter follows the same learning loop:
 3. Learn the common design patterns.
 4. Evaluate the trade-offs with concrete questions.
 
-The material begins with networking and the [Core Components](./api-gateway-load-balancing.md)
-that receive and process requests: API gateways, load balancers, and servers.
+The material begins with networking, then the
+[Distributed Systems Fundamentals](./distributed-systems.md) behind replicated
+data: quorums, consensus, and version vectors. [Core
+Components](./api-gateway-load-balancing.md) covers what receives and processes
+requests: API gateways, load balancers, and servers.
 The [Patterns](./patterns.md) section covers large-blob transfers, reliable
 multi-step workflows, and real-time updates. Later chapters introduce the
 stateful building blocks used in most large systems: databases, caches, queues,
