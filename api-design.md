@@ -43,6 +43,8 @@ may do. Being logged in as rider 42 doesn't let you cancel rider 77's ride.
   styles and when to use each.
 - [Authentication: Sessions vs. JWTs](./api-design/authentication.md): two ways
   to remember who's logged in.
+- [HTTP Status Codes](./api-design/status-codes.md): the codes worth knowing,
+  and which ones are safe to retry.
 
 ```{tip}
 Design the API around what the client needs to do, not around your database

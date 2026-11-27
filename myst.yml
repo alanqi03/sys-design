@@ -80,6 +80,7 @@ project:
       children:
         - file: api-design/api-types.md
         - file: api-design/authentication.md
+        - file: api-design/status-codes.md
     - file: agent-system-design.md
       children:
         - file: agents/orchestrator-layer.md
